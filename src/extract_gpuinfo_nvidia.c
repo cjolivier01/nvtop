@@ -21,6 +21,7 @@
 
 #include "nvtop/common.h"
 #include "nvtop/extract_gpuinfo_common.h"
+#include "nvtop/time.h"
 
 #include <dlfcn.h>
 #include <errno.h>
@@ -229,6 +230,46 @@ nvmlReturn_t (*nvmlDeviceGetProcessUtilization)(nvmlDevice_t device, nvmlProcess
                                                 unsigned int *processSamplesCount,
                                                 unsigned long long lastSeenTimeStamp);
 
+// GPM (GPU Performance Monitoring), the NVML interface to the hardware
+// performance counters that back DCGM's profiling metrics. It lives inside
+// libnvidia-ml and is dlsym'd like everything else here; the symbols are
+// absent on drivers older than R510. The struct layouts, the metric ids and
+// the version macro below are taken verbatim from nvml.h.
+typedef struct nvmlGpmSample_st *nvmlGpmSample_t;
+
+#define NVML_GPM_METRIC_SM_OCCUPANCY 3
+#define NVML_GPM_METRIC_MAX 333
+#define NVML_GPM_METRICS_GET_VERSION 1
+
+typedef struct {
+  unsigned int metricId;
+  nvmlReturn_t nvmlReturn;
+  double value;
+  struct {
+    char *shortName;
+    char *longName;
+    char *unit;
+  } metricInfo;
+} nvmlGpmMetric_t;
+
+typedef struct {
+  unsigned int version;
+  unsigned int numMetrics;
+  nvmlGpmSample_t sample1;
+  nvmlGpmSample_t sample2;
+  nvmlGpmMetric_t metrics[NVML_GPM_METRIC_MAX];
+} nvmlGpmMetricsGet_t;
+
+static nvmlReturn_t (*nvmlGpmSampleAlloc)(nvmlGpmSample_t *gpmSample);
+static nvmlReturn_t (*nvmlGpmSampleFree)(nvmlGpmSample_t gpmSample);
+static nvmlReturn_t (*nvmlGpmSampleGet)(nvmlDevice_t device, nvmlGpmSample_t gpmSample);
+static nvmlReturn_t (*nvmlGpmMetricsGet)(nvmlGpmMetricsGet_t *metricsGet);
+
+// nvml.h: the two samples handed to nvmlGpmMetricsGet must be more than 100ms
+// apart, that being the rate at which the counters behind them refresh. Closer
+// together and consecutive samples are identical, which comes out as a flat 0.
+#define GPM_MIN_SAMPLE_INTERVAL_NS UINT64_C(100000000)
+
 struct gpu_info_nvidia {
   struct gpu_info base;
   struct list_head allocate_list;
@@ -236,9 +277,24 @@ struct gpu_info_nvidia {
   nvmlDevice_t gpuhandle;
   bool isInMigMode;
   unsigned long long last_utilization_timestamp;
+
+  // GPM: two samples ping-ponged so that each refresh diffs against the
+  // previous one. Only on gpm_list while the sample buffers are allocated.
+  struct list_head gpm_list;
+  bool gpm_unsupported;
+  bool gpm_primed;
+  bool gpm_have_occupancy;
+  unsigned gpm_occupancy;
+  nvtop_time gpm_prev_time;
+  nvmlGpmSample_t gpm_prev;
+  nvmlGpmSample_t gpm_cur;
 };
 
 static LIST_HEAD(allocations);
+// Devices holding GPM sample buffers. The allocations list above only holds
+// the first element of each calloc'd device array, so it cannot be used to
+// reach every device.
+static LIST_HEAD(gpm_sampled_devices);
 
 static bool gpuinfo_nvidia_init(void);
 static void gpuinfo_nvidia_shutdown(void);
@@ -429,6 +485,10 @@ static bool gpuinfo_nvidia_init(void) {
   // These ones might not be available
   nvmlDeviceGetProcessUtilization = dlsym(libnvidia_ml_handle, "nvmlDeviceGetProcessUtilization");
   nvmlDeviceGetMigMode = dlsym(libnvidia_ml_handle, "nvmlDeviceGetMigMode");
+  nvmlGpmSampleAlloc = dlsym(libnvidia_ml_handle, "nvmlGpmSampleAlloc");
+  nvmlGpmSampleFree = dlsym(libnvidia_ml_handle, "nvmlGpmSampleFree");
+  nvmlGpmSampleGet = dlsym(libnvidia_ml_handle, "nvmlGpmSampleGet");
+  nvmlGpmMetricsGet = dlsym(libnvidia_ml_handle, "nvmlGpmMetricsGet");
 
   last_nvml_return_status = nvmlInit();
   if (last_nvml_return_status != NVML_SUCCESS) {
@@ -444,7 +504,29 @@ init_error_clean_exit:
   return false;
 }
 
+// Give the GPM sample buffers back and take the device off
+// gpm_sampled_devices. Only call this on a device that is on that list.
+static void gpuinfo_nvidia_release_gpm_samples(struct gpu_info_nvidia *gpu_info) {
+  if (nvmlGpmSampleFree) {
+    if (gpu_info->gpm_prev)
+      nvmlGpmSampleFree(gpu_info->gpm_prev);
+    if (gpu_info->gpm_cur)
+      nvmlGpmSampleFree(gpu_info->gpm_cur);
+  }
+  gpu_info->gpm_prev = NULL;
+  gpu_info->gpm_cur = NULL;
+  gpu_info->gpm_primed = false;
+  gpu_info->gpm_have_occupancy = false;
+  list_del(&gpu_info->gpm_list);
+}
+
 static void gpuinfo_nvidia_shutdown(void) {
+  // Before nvmlShutdown and the dlclose that takes nvmlGpmSampleFree with it.
+  struct gpu_info_nvidia *sampled, *sampled_tmp;
+  list_for_each_entry_safe(sampled, sampled_tmp, &gpm_sampled_devices, gpm_list) {
+    gpuinfo_nvidia_release_gpm_samples(sampled);
+  }
+
   if (libnvidia_ml_handle) {
     nvmlShutdown();
     dlclose(libnvidia_ml_handle);
@@ -539,6 +621,90 @@ static void gpuinfo_nvidia_populate_static_info(struct gpu_info *_gpu_info) {
     SET_VALID(gpuinfo_temperature_slowdown_threshold_valid, static_info->valid);
 }
 
+// SM occupancy, the share of the theoretical maximum number of warps that was
+// resident on the SMs, read from the GPM counters (the same number DCGM
+// reports as DCGM_FI_PROF_SM_OCCUPANCY). NVML hands back a 0..100 percentage
+// computed from two samples, so no scaling is needed here.
+//
+// Support is decided by what nvmlGpmSampleGet actually returns rather than by
+// nvmlGpmQueryDeviceSupport, so that one call covers a missing symbol, a GPU
+// without GPM and a driver that refuses the request.
+static void gpuinfo_nvidia_refresh_sm_occupancy(struct gpu_info_nvidia *gpu_info) {
+  struct gpuinfo_dynamic_info *dynamic_info = &gpu_info->base.dynamic_info;
+
+  if (!gpuinfo_collect_sm_occupancy || gpu_info->gpm_unsupported) {
+    // Nothing left to diff against once sampling stops; start over if the
+    // series is switched back on.
+    gpu_info->gpm_primed = false;
+    gpu_info->gpm_have_occupancy = false;
+    return;
+  }
+
+  if (!nvmlGpmSampleAlloc || !nvmlGpmSampleFree || !nvmlGpmSampleGet || !nvmlGpmMetricsGet) {
+    gpu_info->gpm_unsupported = true; // driver older than R510
+    return;
+  }
+
+  if (!gpu_info->gpm_prev) {
+    list_add(&gpu_info->gpm_list, &gpm_sampled_devices);
+    if (nvmlGpmSampleAlloc(&gpu_info->gpm_prev) != NVML_SUCCESS ||
+        nvmlGpmSampleAlloc(&gpu_info->gpm_cur) != NVML_SUCCESS) {
+      gpuinfo_nvidia_release_gpm_samples(gpu_info);
+      gpu_info->gpm_unsupported = true;
+      return;
+    }
+  }
+
+  nvtop_time now;
+  nvtop_get_current_time(&now);
+  bool too_soon =
+      gpu_info->gpm_primed && nvtop_difftime_u64(gpu_info->gpm_prev_time, now) < GPM_MIN_SAMPLE_INTERVAL_NS;
+
+  if (!too_soon) {
+    nvmlReturn_t gpm_status = nvmlGpmSampleGet(gpu_info->gpuhandle, gpu_info->gpm_cur);
+    if (gpm_status != NVML_SUCCESS) {
+      gpu_info->gpm_primed = false;
+      gpu_info->gpm_have_occupancy = false;
+      if (gpm_status == NVML_ERROR_NOT_SUPPORTED) {
+        // This GPU has no GPM counters; stop asking it every refresh.
+        gpuinfo_nvidia_release_gpm_samples(gpu_info);
+        gpu_info->gpm_unsupported = true;
+      }
+      return;
+    }
+
+    if (gpu_info->gpm_primed) {
+      nvmlGpmMetricsGet_t metrics = {.version = NVML_GPM_METRICS_GET_VERSION,
+                                     .numMetrics = 1,
+                                     .sample1 = gpu_info->gpm_prev,
+                                     .sample2 = gpu_info->gpm_cur};
+      metrics.metrics[0].metricId = NVML_GPM_METRIC_SM_OCCUPANCY;
+      if (nvmlGpmMetricsGet(&metrics) == NVML_SUCCESS && metrics.metrics[0].nvmlReturn == NVML_SUCCESS) {
+        double occupancy = metrics.metrics[0].value;
+        if (occupancy < 0.)
+          occupancy = 0.;
+        if (occupancy > 100.)
+          occupancy = 100.;
+        gpu_info->gpm_occupancy = (unsigned)(occupancy + .5);
+        gpu_info->gpm_have_occupancy = true;
+      }
+    }
+
+    // This round's sample becomes the next round's baseline.
+    nvmlGpmSample_t spent = gpu_info->gpm_prev;
+    gpu_info->gpm_prev = gpu_info->gpm_cur;
+    gpu_info->gpm_cur = spent;
+    gpu_info->gpm_prev_time = now;
+    gpu_info->gpm_primed = true;
+  }
+
+  // Republished every refresh because refresh_dynamic_info clears the valid
+  // bits; when the refresh interval is below what GPM can resolve, this keeps
+  // the last real reading on the plot instead of dropping it to zero.
+  if (gpu_info->gpm_have_occupancy)
+    SET_GPUINFO_DYNAMIC(dynamic_info, sm_occupancy, gpu_info->gpm_occupancy);
+}
+
 static void gpuinfo_nvidia_refresh_dynamic_info(struct gpu_info *_gpu_info) {
   struct gpu_info_nvidia *gpu_info = container_of(_gpu_info, struct gpu_info_nvidia, base);
   struct gpuinfo_dynamic_info *dynamic_info = &gpu_info->base.dynamic_info;
@@ -594,6 +760,8 @@ static void gpuinfo_nvidia_refresh_dynamic_info(struct gpu_info *_gpu_info) {
   if (last_nvml_return_status == NVML_SUCCESS) {
     SET_GPUINFO_DYNAMIC(dynamic_info, gpu_util_rate, utilization_percentages.gpu);
   }
+
+  gpuinfo_nvidia_refresh_sm_occupancy(gpu_info);
 
   // Encoder utilization rate
   unsigned ignored_period;

@@ -29,6 +29,11 @@
 
 #include "list.h"
 
+// True while the interface is plotting SM occupancy. The NVIDIA backend reads
+// it through the NVML GPM API, which arms the same hardware performance
+// counters DCGM uses, so sampling is kept off until the series is displayed.
+extern bool gpuinfo_collect_sm_occupancy;
+
 #define STRINGIFY(x) STRINGIFY_HELPER_(x)
 #define STRINGIFY_HELPER_(x) #x
 
@@ -107,6 +112,7 @@ enum gpuinfo_dynamic_info_valid {
   gpuinfo_power_draw_max_valid,
   gpuinfo_effective_load_rate_valid,
   gpuinfo_multi_instance_mode_valid,
+  gpuinfo_sm_occupancy_valid,
   gpuinfo_dynamic_info_count,
 };
 
@@ -132,6 +138,7 @@ struct gpuinfo_dynamic_info {
   unsigned int gpu_temp;            // GPU temperature °celsius
   unsigned int power_draw;          // Power usage in milliwatts
   unsigned int power_draw_max;      // Max power usage in milliwatts
+  unsigned int sm_occupancy;        // Active warps vs the theoretical maximum, in %
   bool multi_instance_mode;          // True if the GPU is in multi-instance mode
   unsigned char valid[(gpuinfo_dynamic_info_count + CHAR_BIT - 1) / CHAR_BIT];
 };
