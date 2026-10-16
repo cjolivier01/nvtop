@@ -397,9 +397,12 @@ make debug        # Debug build (extra warning flags) in build/debug
 make asan         # Debug build with the address/undefined sanitizers
 make test         # Configure with BUILD_TESTING=ON and run ctest
 make run          # Build Release and run it
-sudo make install # Install the Release build (PREFIX and DESTDIR are honored)
+make perf && sudo make install  # Install (PREFIX and DESTDIR are honored)
 make distclean    # Remove build/ entirely
 ```
+
+`install` deliberately does not build: compiling under `sudo` would leave the
+build tree owned by root and break the next unprivileged `make perf`.
 
 `make -j N <target>` is forwarded to CMake as `--parallel N`; extra configure
 flags go through `CMAKE_ARGS`, for example
