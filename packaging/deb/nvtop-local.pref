@@ -1,0 +1,22 @@
+# Installed by the nvtop-pin package.
+#
+# Gives every repository candidate for the nvtop package a negative priority,
+# which makes those versions uninstallable. A locally built nvtop .deb stays
+# where it is: `apt upgrade` and `apt full-upgrade` will not replace it with
+# the one from the distribution archive, whatever version numbers the archive
+# grows later on.
+#
+# This blocks *every* repository, PPAs included, so while the pin is installed
+# `apt install nvtop` has nothing to install either. To allow one source
+# through, drop a second stanza below it naming that origin with a positive
+# priority, e.g.
+#
+#   Package: nvtop
+#   Pin: release o=LP-PPA-flexiondotorg-nvtop
+#   Pin-Priority: 500
+#
+# Remove the pin entirely with: sudo apt-get remove nvtop-pin
+
+Package: nvtop
+Pin: release *
+Pin-Priority: -1

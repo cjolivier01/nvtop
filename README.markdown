@@ -412,6 +412,35 @@ than silently installing somewhere else.
 flags go through `CMAKE_ARGS`, for example
 `make perf CMAKE_ARGS="-DNVIDIA_SUPPORT=ON -DAMDGPU_SUPPORT=OFF"`.
 
+### Building a Debian package
+
+`make deb` builds two packages into `dist/` (needs `dpkg-dev`):
+
+* `nvtop_<version>_<arch>.deb` — the same shape as the package in the Ubuntu
+  archive: same package name, section, priority and description, a stripped
+  binary with a compressed man page, and a `postinst` that applies
+  `setcap cap_perfmon=ep`. The library dependencies are derived with
+  `dpkg-shlibdeps` from the binary that was actually built, so they match the
+  feature flags you compiled with.
+* `nvtop-pin_<version>_all.deb` — installs
+  `/etc/apt/preferences.d/99-nvtop-local.pref`, which gives every *repository*
+  version of `nvtop` a negative priority. With it installed, `apt upgrade` and
+  `apt full-upgrade` leave your locally built nvtop alone instead of replacing
+  it with the distribution's. The flip side is that `apt install nvtop` then
+  has nothing to install either; remove `nvtop-pin` to go back to the archive
+  version.
+
+```bash
+make deb                              # both packages
+make deb-only                         # just nvtop
+make deb-pin                          # just the apt pin (no compilation)
+make deb PACKAGE_VERSION=3.3.2-2      # override the version
+sudo dpkg -i dist/nvtop_*.deb dist/nvtop-pin_*.deb
+```
+
+`packaging/make_deb.sh` can also be run directly; `--help` lists its options,
+and anything after `--` is passed to the CMake configure step.
+
 Troubleshoot
 ------------
 

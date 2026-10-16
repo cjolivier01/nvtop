@@ -1,0 +1,19 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ]; then
+	# nvtop reads the NVIDIA/AMD performance counters; cap_perfmon lets it do so
+	# without running as root. Older kernels (< 5.8) do not have the capability,
+	# and some filesystems cannot store it, so a failure here is not fatal --
+	# nvtop still works, it just reports less for some vendors.
+	if command -v setcap >/dev/null 2>&1; then
+		setcap cap_perfmon=ep /usr/bin/nvtop || \
+			echo "nvtop: could not set cap_perfmon on /usr/bin/nvtop; run nvtop as root for full information" >&2
+	fi
+fi
+
+if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ] || [ "$1" = "abort-remove" ]; then
+	if command -v update-icon-caches >/dev/null 2>&1; then
+		update-icon-caches /usr/share/icons/hicolor
+	fi
+fi

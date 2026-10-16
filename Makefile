@@ -42,6 +42,12 @@ CMAKE_PARALLEL_FLAG := --parallel $(strip $(CMAKE_JOBS))
 CMAKE_ARGS ?=
 CMAKE_COMMON_ARGS = -DCMAKE_INSTALL_PREFIX="$(PREFIX)" $(CMAKE_ARGS)
 
+# Debian packaging. PACKAGE_VERSION defaults to the version in CMakeLists.txt.
+DEB_OUTPUT_DIR ?= $(TOPDIR)/dist
+PACKAGE_VERSION ?=
+MAKE_DEB_ARGS = --output-dir="$(DEB_OUTPUT_DIR)" --jobs=$(strip $(CMAKE_JOBS)) \
+	$(if $(PACKAGE_VERSION),--version="$(PACKAGE_VERSION)",)
+
 # $(1) = build directory, $(2) = configure arguments specific to that directory
 # MAKEFLAGS is cleared so that the make CMake drives does not warn about the
 # jobserver it cannot join; parallelism is passed explicitly instead.
@@ -56,7 +62,8 @@ all: print_targets
 # Parallelism belongs to CMake here anyway, not to this makefile.
 .NOTPARALLEL:
 
-.PHONY: all print_targets perf debug relwithdebinfo asan test run install uninstall clean distclean expunge
+.PHONY: all print_targets perf debug relwithdebinfo asan test run install uninstall clean distclean expunge \
+	deb deb-only deb-pin
 
 perf:
 	$(call cmake_build,$(RELEASE_DIR),-DCMAKE_BUILD_TYPE=Release)
@@ -107,6 +114,16 @@ uninstall:
 	fi
 	$(CMAKE) --build "$(RELEASE_DIR)" --target uninstall
 
+deb:
+	@echo "Debian package output directory: $(DEB_OUTPUT_DIR)"
+	packaging/make_deb.sh $(MAKE_DEB_ARGS)
+
+deb-only:
+	packaging/make_deb.sh $(MAKE_DEB_ARGS) --deb-only
+
+deb-pin:
+	packaging/make_deb.sh $(MAKE_DEB_ARGS) --pin-only
+
 clean:
 	@cleaned=0; \
 	for dir in "$(BUILD_ROOT)" "$(BUILD_ROOT)"/*/; do \
@@ -118,7 +135,7 @@ clean:
 	[ "$$cleaned" = 1 ] || echo "Nothing to clean: no configured build directory under $(BUILD_ROOT)."
 
 distclean expunge:
-	rm -rf "$(BUILD_ROOT)"
+	rm -rf "$(BUILD_ROOT)" "$(DEB_OUTPUT_DIR)"
 
 print_targets:
 	@printf '%s\n' \
@@ -145,6 +162,12 @@ print_targets:
 		'               The prefix is whatever `make perf PREFIX=...` configured.' \
 		'uninstall      Remove the files listed by the Release build install manifest.' \
 		'' \
+		'Packaging' \
+		'---------' \
+		'deb            Build the nvtop and nvtop-pin .deb files into $(DEB_OUTPUT_DIR).' \
+		'deb-only       Build only the nvtop .deb.' \
+		'deb-pin        Build only the nvtop-pin .deb (apt pin, no compilation).' \
+		'' \
 		'Tests' \
 		'-----' \
 		'test           Configure Debug with BUILD_TESTING=ON and run ctest (needs GTest).' \
@@ -152,7 +175,7 @@ print_targets:
 		'Maintenance & Cleanup' \
 		'---------------------' \
 		'clean          cmake --build --target clean in every configured build directory.' \
-		'distclean      Remove $(BUILD_ROOT) entirely (also aliased as expunge).' \
+		'distclean      Remove $(BUILD_ROOT) and $(DEB_OUTPUT_DIR) (also aliased as expunge).' \
 		'expunge        Same as distclean.' \
 		'' \
 		'Meta' \
