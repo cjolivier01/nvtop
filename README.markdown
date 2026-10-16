@@ -398,7 +398,7 @@ make asan         # Debug build with the address/undefined sanitizers
 make test         # Configure with BUILD_TESTING=ON and run ctest
 make run          # Build Release and run it
 make perf && sudo make install  # Install (DESTDIR is honored)
-make distclean    # Remove build/ entirely
+make distclean    # Remove build/ and dist/ entirely
 ```
 
 `install` deliberately does not build: compiling under `sudo` would leave the
@@ -427,19 +427,29 @@ flags go through `CMAKE_ARGS`, for example
   version of `nvtop` a negative priority. With it installed, `apt upgrade` and
   `apt full-upgrade` leave your locally built nvtop alone instead of replacing
   it with the distribution's. The flip side is that `apt install nvtop` then
-  has nothing to install either; remove `nvtop-pin` to go back to the archive
-  version.
+  has nothing to install either. The pin file is a conffile, so
+  `apt-get purge nvtop-pin` drops the pin — plain `remove` leaves it behind.
 
 ```bash
 make deb                              # both packages
 make deb-only                         # just nvtop
 make deb-pin                          # just the apt pin (no compilation)
 make deb PACKAGE_VERSION=3.3.2-2      # override the version
-sudo dpkg -i dist/nvtop_*.deb dist/nvtop-pin_*.deb
 ```
 
+The script prints the exact `dpkg -i` line to install what it just built;
+`dist/` is not cleared between runs, so a glob can match several versions.
+
 `packaging/make_deb.sh` can also be run directly; `--help` lists its options,
-and anything after `--` is passed to the CMake configure step.
+and anything after `--` is passed to the CMake configure step. Setting
+`SOURCE_DATE_EPOCH` makes repeated builds of the same tree byte-identical.
+
+The local package is versioned `3.3.2-1`, which outranks what the archive
+ships today — but `-1` is the lowest plausible Debian revision, so any future
+`3.3.2-2` or `3.3.2-1ubuntu1` would win. That is what `nvtop-pin` is for.
+`nvtop-pin` deliberately writes to `/etc/apt/preferences.d`, which lintian
+flags as `package-installs-apt-preferences`; it is meant for local use, not
+for upload to an archive.
 
 Troubleshoot
 ------------

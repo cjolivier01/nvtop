@@ -1,22 +1,42 @@
 # Installed by the nvtop-pin package.
 #
-# Gives every repository candidate for the nvtop package a negative priority,
-# which makes those versions uninstallable. A locally built nvtop .deb stays
-# where it is: `apt upgrade` and `apt full-upgrade` will not replace it with
-# the one from the distribution archive, whatever version numbers the archive
-# grows later on.
+# Keeps apt from replacing a locally built nvtop with the one from a
+# repository. Every repository candidate for the nvtop package is given a
+# negative priority, which makes those versions uninstallable, so `apt upgrade`
+# and `apt full-upgrade` leave the installed package where it is, whatever
+# version numbers the archive grows later on.
 #
-# This blocks *every* repository, PPAs included, so while the pin is installed
-# `apt install nvtop` has nothing to install either. To allow one source
-# through, drop a second stanza below it naming that origin with a positive
-# priority, e.g.
+# apt applies the FIRST stanza that matches a version, so order matters here.
+#
+# The first stanza covers the installed version. Without it the "release *"
+# wildcard below would match the dpkg status file too (it is a pseudo-release,
+# a=now), leaving nvtop with no candidate at all: `apt install nvtop` would
+# then answer "has no installation candidate" instead of "already the newest
+# version".
+Package: nvtop
+Pin: release a=now
+Pin-Priority: 1001
+
+# Everything that comes from an actual repository.
+Package: nvtop
+Pin: release *
+Pin-Priority: -1
+
+# Notes
+# -----
+# This blocks every repository, PPAs included, so while the pin is installed
+# `apt install nvtop` has nothing to install either. To let one source back
+# through, add a stanza naming that origin ABOVE the "release *" one, since the
+# first match wins:
 #
 #   Package: nvtop
 #   Pin: release o=LP-PPA-flexiondotorg-nvtop
 #   Pin-Priority: 500
 #
-# Remove the pin entirely with: sudo apt-get remove nvtop-pin
-
-Package: nvtop
-Pin: release *
-Pin-Priority: -1
+# If the locally built nvtop ever ends up with an unsatisfiable dependency, for
+# example after a library transition, `apt --fix-broken install` cannot repair
+# it by pulling the archive version and will offer to remove nvtop instead.
+# Purge this package first if that happens.
+#
+# This file is a conffile, so `apt-get remove nvtop-pin` leaves it in place.
+# Use `apt-get purge nvtop-pin` to drop the pin.

@@ -116,13 +116,13 @@ uninstall:
 
 deb:
 	@echo "Debian package output directory: $(DEB_OUTPUT_DIR)"
-	packaging/make_deb.sh $(MAKE_DEB_ARGS)
+	"$(TOPDIR)/packaging/make_deb.sh" $(MAKE_DEB_ARGS)
 
 deb-only:
-	packaging/make_deb.sh $(MAKE_DEB_ARGS) --deb-only
+	"$(TOPDIR)/packaging/make_deb.sh" $(MAKE_DEB_ARGS) --deb-only
 
 deb-pin:
-	packaging/make_deb.sh $(MAKE_DEB_ARGS) --pin-only
+	"$(TOPDIR)/packaging/make_deb.sh" $(MAKE_DEB_ARGS) --pin-only
 
 clean:
 	@cleaned=0; \

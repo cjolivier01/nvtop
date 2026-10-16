@@ -15,7 +15,9 @@
 set -euo pipefail
 umask 022
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# readlink -f so that invoking the script through a symlink in ~/bin still
+# finds the source tree it belongs to.
+SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 TEMPLATE_DIR="${SCRIPT_DIR}/deb"
 
@@ -35,7 +37,8 @@ usage() {
 Usage: packaging/make_deb.sh [options] [-- extra cmake args]
 
   --output-dir=DIR   Where to write the .deb files (default: <repo>/dist)
-  --build-dir=DIR    CMake build directory (default: <output-dir>/build)
+  --build-dir=DIR    Scratch directory for the CMake tree and the package
+                     staging areas (default: <repo>/build/deb)
   --version=VERSION  Package version. Without a Debian revision ("-N"), the
                      revision defaults to 1. Default: the version declared in
                      CMakeLists.txt.
@@ -55,16 +58,23 @@ die() {
 	exit 1
 }
 
+# Consume the value of a space-separated option. Without this, an option given
+# as the last argument would shift the stack empty and `set -e` would end the
+# script with no output at all.
+need_value() {
+	[ "$2" -gt 1 ] || die "$1 needs a value"
+}
+
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--output-dir=*) OUTPUT_DIR="${1#*=}" ;;
-	--output-dir) shift; OUTPUT_DIR="${1:-}" ;;
+	--output-dir) need_value "$1" $#; shift; OUTPUT_DIR="$1" ;;
 	--build-dir=*) BUILD_DIR="${1#*=}" ;;
-	--build-dir) shift; BUILD_DIR="${1:-}" ;;
+	--build-dir) need_value "$1" $#; shift; BUILD_DIR="$1" ;;
 	--version=*) PACKAGE_VERSION="${1#*=}" ;;
-	--version) shift; PACKAGE_VERSION="${1:-}" ;;
+	--version) need_value "$1" $#; shift; PACKAGE_VERSION="$1" ;;
 	--jobs=*) JOBS="${1#*=}" ;;
-	--jobs) shift; JOBS="${1:-}" ;;
+	--jobs) need_value "$1" $#; shift; JOBS="$1" ;;
 	--deb-only) BUILD_PIN=0 ;;
 	--pin-only) BUILD_MAIN=0 ;;
 	-h | --help) usage; exit 0 ;;
@@ -74,7 +84,12 @@ while [ $# -gt 0 ]; do
 	shift
 done
 
+[ "${BUILD_MAIN}" -eq 1 ] || [ "${BUILD_PIN}" -eq 1 ] ||
+	die "--deb-only and --pin-only together leave nothing to build"
 [ -n "${OUTPUT_DIR}" ] || die "--output-dir needs a value"
+case "${JOBS}" in
+*[!0-9]* | "") die "--jobs needs a positive integer, got '${JOBS}'" ;;
+esac
 mkdir -p "${OUTPUT_DIR}"
 OUTPUT_DIR="$(cd -- "${OUTPUT_DIR}" && pwd)"
 [ -n "${BUILD_DIR}" ] || BUILD_DIR="${REPO_ROOT}/build/deb"
@@ -96,6 +111,10 @@ case "${PACKAGE_VERSION}" in
 *) FULL_VERSION="${PACKAGE_VERSION}-${DEB_REVISION}" ;;
 esac
 
+# Debian strips the epoch from the file name; a ':' in it also breaks
+# reprepro/dput and cannot be written to vfat or SMB.
+FILE_VERSION="${FULL_VERSION#*:}"
+
 # Maintainer: whoever is building, so the package is traceable back to them.
 if [ -z "${DEB_MAINTAINER:-}" ]; then
 	maintainer_name="$(git -C "${REPO_ROOT}" config user.name 2>/dev/null || true)"
@@ -106,9 +125,19 @@ if [ -z "${DEB_MAINTAINER:-}" ]; then
 		DEB_MAINTAINER="Local build <root@$(hostname -f 2>/dev/null || hostname)>"
 	fi
 fi
+# A newline here would inject arbitrary fields into the control file.
+case "${DEB_MAINTAINER}" in
+*"
+"*) die "DEB_MAINTAINER must be a single line" ;;
+esac
 
-# The Debian changelog format wants an English RFC 5322 date.
-CHANGELOG_DATE="$(LC_ALL=C date -R)"
+# The Debian changelog format wants an English RFC 5322 date. Honouring
+# SOURCE_DATE_EPOCH is what makes two builds of the same tree byte-identical.
+if [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
+	CHANGELOG_DATE="$(LC_ALL=C date -R -u -d "@${SOURCE_DATE_EPOCH}")"
+else
+	CHANGELOG_DATE="$(LC_ALL=C date -R)"
+fi
 
 # $1 = source package name, $2 = staging directory
 write_changelog() {
@@ -125,19 +154,36 @@ EOF
 	install -m 0644 "${TEMPLATE_DIR}/copyright" "${dir}/copyright"
 }
 
-# Installed-Size in KiB. --apparent-size because a plain `du -k` on a
-# compressing filesystem (btrfs/zfs) reports the compressed size, which has
-# nothing to do with how much room the package needs where it gets installed.
+# Installed-Size in KiB, using dpkg-gencontrol's rule since dpkg 1.21: each
+# file counts as ceil(size / 1024) and each directory as 1. Not `du`, which
+# reports whatever the build filesystem felt like -- on btrfs/zfs that is the
+# compressed size, which says nothing about the target system. This runs
+# before DEBIAN/ exists so the control files are not counted; Policy calls the
+# field an estimate, and it lands within a few KiB of what dpkg would say.
 # $1 = staging directory
 installed_size_kib() {
-	du --apparent-size -k -s "$1" | cut -f1
+	find "$1" \( -type f -printf 'f %s\n' \) -o \( -type d -printf 'd 0\n' \) |
+		awk '$1 == "d" { kib += 1; next } { kib += int(($2 + 1023) / 1024) } END { print kib + 0 }'
+}
+
+# Drop anything listed in ./DEBIAN/conffiles from a NUL-separated path list on
+# stdin. grep exits 1 when it selects nothing, which is not an error here.
+filter_out_conffiles() {
+	if [ -f DEBIAN/conffiles ]; then
+		grep -zvxFf <(sed 's|^/||' DEBIAN/conffiles) || [ $? -eq 1 ]
+	else
+		cat
+	fi
 }
 
 # $1 = staging directory. Must run after every payload file is in place.
+# Conffiles are left out, as dh_md5sums does: they are meant to be edited, and
+# listing them makes `dpkg --verify` report an edited package as corrupt.
 write_md5sums() {
 	local stage="$1"
 	(cd "${stage}" && find . -type f -not -path './DEBIAN/*' -printf '%P\0' |
-		LC_ALL=C sort -z | xargs -0 -r md5sum >DEBIAN/md5sums)
+		LC_ALL=C sort -z | filter_out_conffiles |
+		xargs -0 -r md5sum >DEBIAN/md5sums)
 	chmod 0644 "${stage}/DEBIAN/md5sums"
 }
 
@@ -165,9 +211,11 @@ build_nvtop_deb() {
 	DESTDIR="${stage}" cmake --install "${BUILD_DIR}/cmake"
 	[ -f "${stage}/usr/bin/nvtop" ] || die "cmake --install did not produce usr/bin/nvtop"
 
-	# Archive packages ship a stripped binary.
+	# Archive packages ship a stripped binary; the extra sections are the ones
+	# dh_strip removes too.
 	if command -v strip >/dev/null 2>&1; then
-		strip --strip-unneeded "${stage}/usr/bin/nvtop"
+		strip --strip-unneeded --remove-section=.comment --remove-section=.note \
+			"${stage}/usr/bin/nvtop"
 	fi
 
 	# The archive package ships a compressed man page; -n keeps the gzip
@@ -191,8 +239,10 @@ build_nvtop_deb() {
 		sed -n 's/^shlibs:Depends=//p')"
 	rm -rf "${stage}/debian"
 	[ -n "${shlib_depends}" ] || die "dpkg-shlibdeps produced no dependencies"
-	# libcap2-bin provides the setcap called from postinst.
-	local depends="${shlib_depends}, libcap2-bin"
+	# libcap2-bin provides the setcap called from postinst. hicolor-icon-theme
+	# owns /usr/share/icons/hicolor/index.theme, without which
+	# update-icon-caches skips the directory the icon is installed into.
+	local depends="${shlib_depends}, libcap2-bin, hicolor-icon-theme"
 
 	install -d -m 0755 "${stage}/DEBIAN"
 	cat >"${stage}/DEBIAN/control" <<EOF
@@ -217,7 +267,7 @@ EOF
 	install -m 0755 "${TEMPLATE_DIR}/nvtop.postrm" "${stage}/DEBIAN/postrm"
 
 	write_md5sums "${stage}"
-	build_deb "${stage}" "${OUTPUT_DIR}/nvtop_${FULL_VERSION}_${ARCH}.deb"
+	build_deb "${stage}" "${OUTPUT_DIR}/nvtop_${FILE_VERSION}_${ARCH}.deb"
 }
 
 build_pin_deb() {
@@ -237,6 +287,7 @@ build_pin_deb() {
 	install -d -m 0755 "${stage}/DEBIAN"
 	cat >"${stage}/DEBIAN/control" <<EOF
 Package: nvtop-pin
+Source: nvtop
 Version: ${FULL_VERSION}
 Architecture: all
 Maintainer: ${DEB_MAINTAINER}
@@ -251,14 +302,16 @@ Description: Keep apt from replacing a locally built nvtop
  pull the distribution's nvtop over the top of it.
  .
  While this package is installed, nvtop cannot be installed from any
- repository either. Remove it to go back to the archive version.
+ repository either. The pin file is a conffile, so purge this package
+ (apt-get purge nvtop-pin) to drop the pin; removing it leaves the file
+ behind.
 EOF
 	chmod 0644 "${stage}/DEBIAN/control"
 	printf '/etc/apt/preferences.d/%s\n' "${PIN_FILE_NAME}" >"${stage}/DEBIAN/conffiles"
 	chmod 0644 "${stage}/DEBIAN/conffiles"
 
 	write_md5sums "${stage}"
-	build_deb "${stage}" "${OUTPUT_DIR}/nvtop-pin_${FULL_VERSION}_all.deb"
+	build_deb "${stage}" "${OUTPUT_DIR}/nvtop-pin_${FILE_VERSION}_all.deb"
 }
 
 if [ "${BUILD_MAIN}" -eq 1 ]; then
@@ -270,10 +323,10 @@ fi
 
 install_args=""
 if [ "${BUILD_MAIN}" -eq 1 ]; then
-	install_args="${install_args} ${OUTPUT_DIR}/nvtop_${FULL_VERSION}_${ARCH}.deb"
+	install_args="${install_args} '${OUTPUT_DIR}/nvtop_${FILE_VERSION}_${ARCH}.deb'"
 fi
 if [ "${BUILD_PIN}" -eq 1 ]; then
-	install_args="${install_args} ${OUTPUT_DIR}/nvtop-pin_${FULL_VERSION}_all.deb"
+	install_args="${install_args} '${OUTPUT_DIR}/nvtop-pin_${FILE_VERSION}_all.deb'"
 fi
 echo
 echo "Install with:"
