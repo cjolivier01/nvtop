@@ -29,11 +29,6 @@
 
 #include "list.h"
 
-// True while the interface is plotting SM occupancy. The NVIDIA backend reads
-// it through the NVML GPM API, which arms the same hardware performance
-// counters DCGM uses, so sampling is kept off until the series is displayed.
-extern bool gpuinfo_collect_sm_occupancy;
-
 #define STRINGIFY(x) STRINGIFY_HELPER_(x)
 #define STRINGIFY_HELPER_(x) #x
 
@@ -227,6 +222,11 @@ struct gpu_info {
   struct gpu_process *processes;
   unsigned processes_array_size;
   char pdev[PDEV_LEN];
+  // Set by the interface while this device is plotting SM occupancy. The
+  // NVIDIA backend reads it through the NVML GPM API, which arms the same
+  // hardware performance counters DCGM uses, so a device nobody is plotting
+  // is never sampled.
+  bool collect_sm_occupancy;
 };
 
 void register_gpu_vendor(struct gpu_vendor *vendor);

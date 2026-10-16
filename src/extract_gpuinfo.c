@@ -37,9 +37,6 @@
 const char drm_pdev[] = "drm-pdev";
 const char drm_client_id[] = "drm-client-id";
 
-// Off until the interface plots SM occupancy; see extract_gpuinfo_common.h.
-bool gpuinfo_collect_sm_occupancy = false;
-
 struct process_info_cache {
   pid_t pid;
   char *cmdline;

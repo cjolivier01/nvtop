@@ -232,9 +232,9 @@ nvmlReturn_t (*nvmlDeviceGetProcessUtilization)(nvmlDevice_t device, nvmlProcess
 
 // GPM (GPU Performance Monitoring), the NVML interface to the hardware
 // performance counters that back DCGM's profiling metrics. It lives inside
-// libnvidia-ml and is dlsym'd like everything else here; the symbols are
-// absent on drivers older than R510. The struct layouts, the metric ids and
-// the version macro below are taken verbatim from nvml.h.
+// libnvidia-ml and is dlsym'd like everything else here; the symbols were
+// added in R520 and are absent on older drivers. The struct layouts, the
+// metric ids and the version macro below are taken verbatim from nvml.h.
 typedef struct nvmlGpmSample_st *nvmlGpmSample_t;
 
 #define NVML_GPM_METRIC_SM_OCCUPANCY 3
@@ -632,7 +632,7 @@ static void gpuinfo_nvidia_populate_static_info(struct gpu_info *_gpu_info) {
 static void gpuinfo_nvidia_refresh_sm_occupancy(struct gpu_info_nvidia *gpu_info) {
   struct gpuinfo_dynamic_info *dynamic_info = &gpu_info->base.dynamic_info;
 
-  if (!gpuinfo_collect_sm_occupancy || gpu_info->gpm_unsupported) {
+  if (!gpu_info->base.collect_sm_occupancy || gpu_info->gpm_unsupported) {
     // Nothing left to diff against once sampling stops; start over if the
     // series is switched back on.
     gpu_info->gpm_primed = false;
@@ -641,7 +641,7 @@ static void gpuinfo_nvidia_refresh_sm_occupancy(struct gpu_info_nvidia *gpu_info
   }
 
   if (!nvmlGpmSampleAlloc || !nvmlGpmSampleFree || !nvmlGpmSampleGet || !nvmlGpmMetricsGet) {
-    gpu_info->gpm_unsupported = true; // driver older than R510
+    gpu_info->gpm_unsupported = true; // driver older than R520
     return;
   }
 
@@ -674,10 +674,16 @@ static void gpuinfo_nvidia_refresh_sm_occupancy(struct gpu_info_nvidia *gpu_info
     }
 
     if (gpu_info->gpm_primed) {
-      nvmlGpmMetricsGet_t metrics = {.version = NVML_GPM_METRICS_GET_VERSION,
-                                     .numMetrics = 1,
-                                     .sample1 = gpu_info->gpm_prev,
-                                     .sample2 = gpu_info->gpm_cur};
+      // File scope rather than a local: the struct carries room for all 333
+      // metric slots nvml.h declares, and 13 KB of stack to zero once per GPU
+      // per refresh for the one slot in use is not worth it. nvtop is single
+      // threaded, so a shared scratch buffer is safe.
+      static nvmlGpmMetricsGet_t metrics;
+      memset(&metrics, 0, sizeof(metrics));
+      metrics.version = NVML_GPM_METRICS_GET_VERSION;
+      metrics.numMetrics = 1;
+      metrics.sample1 = gpu_info->gpm_prev;
+      metrics.sample2 = gpu_info->gpm_cur;
       metrics.metrics[0].metricId = NVML_GPM_METRIC_SM_OCCUPANCY;
       if (nvmlGpmMetricsGet(&metrics) == NVML_SUCCESS && metrics.metrics[0].nvmlReturn == NVML_SUCCESS) {
         double occupancy = metrics.metrics[0].value;
@@ -687,6 +693,11 @@ static void gpuinfo_nvidia_refresh_sm_occupancy(struct gpu_info_nvidia *gpu_info
           occupancy = 100.;
         gpu_info->gpm_occupancy = (unsigned)(occupancy + .5);
         gpu_info->gpm_have_occupancy = true;
+      } else {
+        // Drop the cached reading rather than republish it forever: a metric
+        // that stops resolving should leave the plot, not flatline at its
+        // last value.
+        gpu_info->gpm_have_occupancy = false;
       }
     }
 
@@ -699,8 +710,8 @@ static void gpuinfo_nvidia_refresh_sm_occupancy(struct gpu_info_nvidia *gpu_info
   }
 
   // Republished every refresh because refresh_dynamic_info clears the valid
-  // bits; when the refresh interval is below what GPM can resolve, this keeps
-  // the last real reading on the plot instead of dropping it to zero.
+  // bits; on a refresh that came round too soon for GPM to resolve, this
+  // keeps the last real reading on the plot instead of dropping it to zero.
   if (gpu_info->gpm_have_occupancy)
     SET_GPUINFO_DYNAMIC(dynamic_info, sm_occupancy, gpu_info->gpm_occupancy);
 }

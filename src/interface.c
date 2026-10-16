@@ -1839,14 +1839,15 @@ static void draw_plots(struct nvtop_interface *interface) {
 
 void draw_gpu_info_ncurses(unsigned devices_count, struct list_head *devices, struct nvtop_interface *interface) {
 
-  // Sample the NVML GPM counters only while an SM occupancy series is on
-  // screen, so an idle nvtop never arms them. This is picked up by the next
-  // refresh, which is soon enough: the series needs two samples to show its
-  // first point anyway.
-  gpuinfo_collect_sm_occupancy = false;
-  for (unsigned i = 0; !gpuinfo_collect_sm_occupancy && i < interface->total_dev_count; ++i) {
-    if (plot_isset_draw_info(plot_sm_occupancy, interface->options.gpu_specific_opts[i].to_draw))
-      gpuinfo_collect_sm_occupancy = true;
+  // Sample the NVML GPM counters only on the devices whose own chart shows SM
+  // occupancy, so neither an idle nvtop nor a GPU nobody is plotting arms
+  // them. Picked up by the next refresh, which is soon enough: the series
+  // needs two samples to produce its first point anyway.
+  for (unsigned i = 0; i < interface->total_dev_count; ++i) {
+    struct gpu_info *gpu = interface->options.gpu_specific_opts[i].linkedGpu;
+    if (gpu)
+      gpu->collect_sm_occupancy =
+          plot_isset_draw_info(plot_sm_occupancy, interface->options.gpu_specific_opts[i].to_draw);
   }
 
   draw_devices(devices, interface);

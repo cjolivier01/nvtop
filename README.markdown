@@ -114,11 +114,11 @@ take a look at the [NVML documentation](http://docs.nvidia.com/deploy/nvml-api/n
 
 The **SM occupancy** chart metric (the share of the theoretical maximum number
 of warps that was resident on the SMs, the same figure DCGM reports as
-`DCGM_FI_PROF_SM_OCCUPANCY`) comes from the NVML GPM API, which needs driver
-R510 or newer and a GPU that exposes the GPM counters. It is off by default and
-enabled per GPU from the *Chart* section of the setup window (F2); nvtop only
-samples the counters while the metric is on a plot. On GPUs or drivers without
-GPM support the series simply stays empty.
+`DCGM_FI_PROF_SM_OCCUPANCY`) comes from the NVML GPM API, which was added in
+the R520 driver series and needs a GPU that exposes the GPM counters. It is off
+by default and enabled per GPU from the *Chart* section of the setup window
+(F2); nvtop samples the counters only on the GPUs whose chart has the metric
+enabled. On GPUs or drivers without GPM support the series simply stays empty.
 
 ### Adreno
 
