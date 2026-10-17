@@ -695,6 +695,22 @@ static void draw_percentage_meter_with_yellow_highlight(WINDOW *win, const char 
 
 static const char *memory_prefix[] = {" B", "Ki", "Mi", "Gi", "Ti", "Pi"};
 
+// Widest summary fitting `budget` columns; a longer one overwrites the "MEM[" label.
+static void format_used_total_memory(char *buff, size_t buff_size, int budget, double used, double total) {
+  double used_prefixed = used, total_prefixed = total;
+  size_t prefix_off;
+  for (prefix_off = 0; prefix_off < 5 && total_prefixed >= 1000.; ++prefix_off) {
+    total_prefixed /= 1024.;
+    used_prefixed /= 1024.;
+  }
+  const char *unit = memory_prefix[prefix_off];
+  if (snprintf(buff, buff_size, "%.3f%s/%.3f%s", used_prefixed, unit, total_prefixed, unit) <= budget)
+    return;
+  if (snprintf(buff, buff_size, "%.1f/%.1f%s", used_prefixed, total_prefixed, unit) <= budget)
+    return;
+  snprintf(buff, buff_size, "%.0f/%.0f%s", used_prefixed, total_prefixed, unit);
+}
+
 static void format_bytes(char *buffer, size_t size, uint64_t bytes) {
   double value = bytes;
   size_t unit = 0;
@@ -1043,14 +1059,7 @@ static void draw_devices(struct list_head *devices, struct nvtop_interface *inte
         GPUINFO_DYNAMIC_FIELD_VALID(&device->dynamic_info, used_memory)) {
       double total_mem = device->dynamic_info.total_memory;
       double used_mem = device->dynamic_info.used_memory;
-      double total_prefixed = total_mem, used_prefixed = used_mem;
-      size_t prefix_off;
-      for (prefix_off = 0; prefix_off < 5 && total_prefixed >= 1000.; ++prefix_off) {
-        total_prefixed /= 1024.;
-        used_prefixed /= 1024.;
-      }
-      snprintf(buff, 1024, "%.3f%s/%.3f%s", used_prefixed, memory_prefix[prefix_off], total_prefixed,
-               memory_prefix[prefix_off]);
+      format_used_total_memory(buff, 1024, getmaxx(mem_util_win) - 5, used_mem, total_mem); // 5 = "MEM" + "[]"
       draw_percentage_meter(mem_util_win, "MEM", (unsigned int)(100. * used_mem / total_mem), buff);
     } else if (GPUINFO_DYNAMIC_FIELD_VALID(&device->dynamic_info, total_memory)) {
       double total_mem = device->dynamic_info.total_memory;
