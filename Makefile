@@ -6,12 +6,17 @@
 # Two nvtop-specific paths, so that running this from some other CMake
 # project's directory is an error rather than a build of that project.
 TOPDIR := $(CURDIR)
-ifneq ($(shell test -f "$(TOPDIR)/CMakeLists.txt" -a -f "$(TOPDIR)/src/nvtop.c" && echo found),found)
+ifneq ($(shell test -f "$(TOPDIR)/CMakeLists.txt" && test -f "$(TOPDIR)/src/nvtop.c" && echo found),found)
 $(error Run make from the nvtop source directory, or use `make -C /path/to/nvtop`)
 endif
 CMAKE ?= cmake
 CTEST ?= ctest
 PREFIX ?= /usr/local
+
+# Whether the caller actually asked for a prefix, as opposed to inheriting the
+# default above. `sudo make install` drops PREFIX from the environment, so a
+# plain install must use whatever `make perf` configured rather than complain.
+PREFIX_IS_EXPLICIT := $(filter-out file default undefined,$(origin PREFIX))
 
 # Every build type gets its own directory under build/ so that, for example, a
 # Release and an ASan tree can coexist without reconfiguring each other away.
@@ -75,15 +80,20 @@ run: perf
 # be checked against it -- CMake bakes it into the RPATH at configure time, so
 # redirecting the install alone would produce a subtly different binary.
 install:
-	@if [ ! -f "$(RELEASE_DIR)/CMakeCache.txt" ]; then \
+	@if [ ! -x "$(RELEASE_DIR)/src/nvtop" ]; then \
 		echo 'ERROR: no Release build in $(RELEASE_DIR); run `make perf` first.' >&2; \
 		exit 2; \
 	fi
-	@configured=$$(sed -n 's/^CMAKE_INSTALL_PREFIX:PATH=//p' "$(RELEASE_DIR)/CMakeCache.txt"); \
-	if [ "$$configured" != "$(PREFIX)" ]; then \
-		echo "ERROR: $(RELEASE_DIR) was configured with prefix '$$configured', not '$(PREFIX)'." >&2; \
-		echo "       Run \`make perf PREFIX=$(PREFIX)\` first; the prefix is fixed at configure time." >&2; \
-		exit 2; \
+	@if [ -n "$(PREFIX_IS_EXPLICIT)" ]; then \
+		strip_slashes() { printf '%s' "$$1" | sed -e 's|/*$$||'; }; \
+		configured=$$(strip_slashes "$$(sed -n 's|^CMAKE_INSTALL_PREFIX:PATH=||p' "$(RELEASE_DIR)/CMakeCache.txt")"); \
+		wanted=$$(strip_slashes '$(PREFIX)'); \
+		if [ "$$configured" != "$$wanted" ]; then \
+			echo "ERROR: $(RELEASE_DIR) was configured with prefix '$$configured', not '$$wanted'." >&2; \
+			echo "       Install there with \`make install PREFIX=$$configured\`, or rebuild for" >&2; \
+			echo "       '$$wanted' with \`make perf PREFIX=$$wanted\` and install again." >&2; \
+			exit 2; \
+		fi; \
 	fi
 	$(CMAKE) --install "$(RELEASE_DIR)"
 

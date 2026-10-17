@@ -402,10 +402,11 @@ make distclean    # Remove build/ entirely
 ```
 
 `install` deliberately does not build: compiling under `sudo` would leave the
-build tree owned by root and break the next unprivileged `make perf`. Because
-of that, the install prefix is whatever `make perf` was configured with —
-use `make perf PREFIX=/opt/nvtop && sudo make install`, not `make install
-PREFIX=...`, which refuses rather than installing somewhere unexpected.
+build tree owned by root and break the next unprivileged `make perf`. The
+install prefix therefore belongs to the configure step — use
+`make perf PREFIX=/opt/nvtop && sudo make install`. Passing a `PREFIX` to
+`install` that disagrees with the one the tree was built for is refused rather
+than silently installing somewhere else.
 
 `make -j N <target>` is forwarded to CMake as `--parallel N`; extra configure
 flags go through `CMAKE_ARGS`, for example
