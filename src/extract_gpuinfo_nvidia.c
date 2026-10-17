@@ -34,6 +34,7 @@
 #define NVML_SUCCESS 0
 #define NVML_ERROR_NOT_SUPPORTED 3
 #define NVML_ERROR_INSUFFICIENT_SIZE 7
+#define NVML_ERROR_UNKNOWN 999
 
 typedef struct nvmlDevice *nvmlDevice_t;
 typedef int nvmlReturn_t; // store the enum as int
@@ -687,6 +688,12 @@ static void gpuinfo_nvidia_refresh_sm_occupancy(struct gpu_info_nvidia *gpu_info
       metrics.sample1 = gpu_info->gpm_prev;
       metrics.sample2 = gpu_info->gpm_cur;
       metrics.metrics[0].metricId = NVML_GPM_METRIC_SM_OCCUPANCY;
+      // A failed nvmlGpmMetricsGet leaves the OUT fields untouched, and this
+      // buffer is shared between GPUs, so seed them: otherwise a failure
+      // would leave the previous GPU's reading sitting there. The status has
+      // to be a non-success value, since zero means NVML_SUCCESS.
+      metrics.metrics[0].nvmlReturn = NVML_ERROR_UNKNOWN;
+      metrics.metrics[0].value = 0.;
       if (nvmlGpmMetricsGet(&metrics) == NVML_SUCCESS && metrics.metrics[0].nvmlReturn == NVML_SUCCESS) {
         double occupancy = metrics.metrics[0].value;
         if (occupancy < 0.)
