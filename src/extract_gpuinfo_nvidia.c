@@ -674,12 +674,14 @@ static void gpuinfo_nvidia_refresh_sm_occupancy(struct gpu_info_nvidia *gpu_info
     }
 
     if (gpu_info->gpm_primed) {
-      // File scope rather than a local: the struct carries room for all 333
-      // metric slots nvml.h declares, and 13 KB of stack to zero once per GPU
-      // per refresh for the one slot in use is not worth it. nvtop is single
-      // threaded, so a shared scratch buffer is safe.
+      // Static rather than a local: the struct carries room for all 333
+      // metric slots nvml.h declares, which is 13 KB of stack to zero once
+      // per GPU per refresh for the one slot in use. Static zero
+      // initialization covers the unused slots once and for all -- NVML only
+      // reads and writes the first numMetrics of them, and nothing here ever
+      // touches the rest -- so every field that matters is assigned below.
+      // nvtop is single threaded, so sharing the buffer is safe.
       static nvmlGpmMetricsGet_t metrics;
-      memset(&metrics, 0, sizeof(metrics));
       metrics.version = NVML_GPM_METRICS_GET_VERSION;
       metrics.numMetrics = 1;
       metrics.sample1 = gpu_info->gpm_prev;
