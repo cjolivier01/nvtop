@@ -2,9 +2,11 @@
 #
 # Keeps apt from replacing a locally built nvtop with the one from a
 # repository. Every repository candidate for the nvtop package is given a
-# negative priority, which makes those versions uninstallable, so `apt upgrade`
-# and `apt full-upgrade` leave the installed package where it is, whatever
-# version numbers the archive grows later on.
+# negative priority, so it is never chosen on its own and `apt upgrade` and
+# `apt full-upgrade` leave the installed package where it is, whatever version
+# numbers the archive grows later on. (Naming a version outright still
+# overrides this, as it does any pin: `apt install nvtop=3.2.0-2` installs
+# that version.)
 #
 # apt applies the FIRST stanza that matches a version, so order matters here.
 #
@@ -13,9 +15,10 @@
 # a=now), leaving nvtop with no candidate at all: `apt install nvtop` would
 # then answer "has no installation candidate" instead of "already the newest
 # version". 100 is apt's own priority for a version that exists only in the
-# status file, and it is deliberately not higher: a priority above 500 here
-# would also outrank any allow-this-origin stanza added below, silently
-# breaking the escape hatch described at the end of this file.
+# status file, and it is deliberately not higher: once the installed version
+# outranks an allowed origin's own priority, apt keeps it unconditionally and
+# the escape hatch described at the end of this file silently does nothing,
+# wherever that origin's stanza is placed.
 Package: nvtop
 Pin: release a=now
 Pin-Priority: 100

@@ -88,8 +88,10 @@ done
 	die "--deb-only and --pin-only together leave nothing to build"
 [ -n "${OUTPUT_DIR}" ] || die "--output-dir needs a value"
 case "${JOBS}" in
-*[!0-9]* | "" | 0 | 0*) die "--jobs needs a positive integer, got '${JOBS}'" ;;
+*[!0-9]* | "") die "--jobs needs a positive integer, got '${JOBS}'" ;;
 esac
+# Digits only by now, so this just rules out zero (including "00").
+[ "$((10#${JOBS}))" -gt 0 ] || die "--jobs needs a positive integer, got '${JOBS}'"
 mkdir -p "${OUTPUT_DIR}"
 OUTPUT_DIR="$(cd -- "${OUTPUT_DIR}" && pwd)"
 [ -n "${BUILD_DIR}" ] || BUILD_DIR="${REPO_ROOT}/build/deb"
