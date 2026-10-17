@@ -481,7 +481,9 @@ static void alloc_plot_window(unsigned devices_count, struct window_position *pl
   for (size_t i = 0; i < interface->num_plots; ++i) {
     interface->plots[i].num_devices_to_plot = 0;
     for (unsigned dev_id = 0; dev_id < devices_count; ++dev_id) {
-      if (map_device_to_plot[dev_id] == i) {
+      // A GPU drawing no lines still maps to a plot; counting it can overrun devices_ids.
+      if (map_device_to_plot[dev_id] == i &&
+          plot_count_draw_info(interface->options.gpu_specific_opts[dev_id].to_draw)) {
         interface->plots[i].devices_ids[interface->plots[i].num_devices_to_plot] = dev_id;
         interface->plots[i].num_devices_to_plot++;
       }
