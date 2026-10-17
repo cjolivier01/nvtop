@@ -3,6 +3,7 @@
 #include "nvtop/interface_options.h"
 
 #include <assert.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -103,6 +104,9 @@ static unsigned size_differences_between_stacks(unsigned plot_count, unsigned st
   return sum;
 }
 
+// Matches no plot index, so info_in_plot() and alloc_plot_window() skip the device.
+#define UNPLOTTED_DEVICE UINT_MAX
+
 static void preliminary_plot_positioning(unsigned rows_for_plots, unsigned plot_total_cols, unsigned devices_count,
                                          const nvtop_interface_gpu_opts gpuOpts[devices_count],
                                          unsigned map_device_to_plot[devices_count],
@@ -166,8 +170,43 @@ static void preliminary_plot_positioning(unsigned rows_for_plots, unsigned plot_
                 map_device_to_plot[devId] = map_device_to_plot[to_merge[0]];
             }
             search_a_window_configuration = true;
-          } else { // No merge left
-            num_plot_stacks = 0;
+          } else {
+            // No merge left: drop one chart and retry rather than showing none at all.
+            unsigned last_plotted = devices_count;
+            unsigned last_integrated = devices_count;
+            unsigned plots_left = 0;
+            for (unsigned idx = 0; idx < devices_count; ++idx) {
+              if (!num_info_per_plot[idx])
+                continue;
+              last_plotted = idx;
+              plots_left++;
+              bool any_device = false;
+              bool all_integrated = true;
+              for (unsigned devId = 0; devId < devices_count; ++devId) {
+                if (map_device_to_plot[devId] != idx)
+                  continue;
+                any_device = true;
+                const struct gpu_info *gpu = gpuOpts[devId].linkedGpu;
+                if (!gpu || !gpu->static_info.integrated_graphics) {
+                  all_integrated = false;
+                  break;
+                }
+              }
+              if (any_device && all_integrated)
+                last_integrated = idx;
+            }
+            // An integrated GPU's chart goes first; the discrete card is the one being watched.
+            unsigned plot_to_drop = last_integrated < devices_count ? last_integrated : last_plotted;
+            if (plots_left > 1) {
+              num_info_per_plot[plot_to_drop] = 0;
+              for (unsigned devId = 0; devId < devices_count; ++devId) {
+                if (map_device_to_plot[devId] == plot_to_drop)
+                  map_device_to_plot[devId] = UNPLOTTED_DEVICE;
+              }
+              search_a_window_configuration = true;
+            } else {
+              num_plot_stacks = 0;
+            }
           }
           break;
         }
