@@ -112,13 +112,29 @@ Kepler microarchitecture. Anything starting at GeForce 600, GeForce 800M and
 successor should work fine. For more information about supported GPUs please
 take a look at the [NVML documentation](http://docs.nvidia.com/deploy/nvml-api/nvml-api-reference.html#nvml-api-reference).
 
-The **SM occupancy** chart metric (the share of the theoretical maximum number
-of warps that was resident on the SMs, the same figure DCGM reports as
-`DCGM_FI_PROF_SM_OCCUPANCY`) comes from the NVML GPM API, which was added in
-the R520 driver series and needs a GPU that exposes the GPM counters. It is off
-by default and enabled per GPU from the *Chart* section of the setup window
-(F2); nvtop samples the counters only on the GPUs whose chart has the metric
-enabled. On GPUs or drivers without GPM support the series simply stays empty.
+**SM occupancy** is the share of the theoretical maximum number of warps that
+was resident on the SMs — the same figure DCGM reports as
+`DCGM_FI_PROF_SM_OCCUPANCY`. It answers something the GPU utilization rate
+cannot: that one only says a kernel was resident, not how much of the machine
+it filled, so a workload can sit at 100% GPU with 13% occupancy.
+
+It appears as an `SM[...]` meter on the utilization line next to GPU and MEM,
+and as a chart series. Both are **on by default** for NVIDIA GPUs where the
+driver reports the counters exist, and both are turned off together from the
+*Chart* section of the setup window (F2), per GPU. nvtop samples the counters
+only on GPUs that have the metric enabled, so switching it off stops the
+sampling too — as does `-p`, which disables the charts and the meter with
+them.
+
+The number comes from the NVML GPM API, added in the R520 driver series.
+Support is queried per GPU at startup via `nvmlGpmQueryDeviceSupport`, so a
+GPU without the counters is simply not offered the metric rather than being
+given a meter reading `N/A` and a chart line pinned at zero. If you enable it
+by hand on such a GPU, that is what you get.
+
+The meter needs roughly 92 columns of device row to appear; below that it is
+dropped so the memory meter keeps the width its text needs. The chart series
+is unaffected by terminal width.
 
 ### Adreno
 

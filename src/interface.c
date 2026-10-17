@@ -55,10 +55,85 @@ static unsigned int sizeof_process_field[process_field_count] = {
     [process_cpu_usage] = 6, [process_cpu_mem_usage] = 9, [process_command] = 0,
 };
 
-static void alloc_device_window(unsigned int start_row, unsigned int start_col, unsigned int totalcol,
+// Split the utilization line into GPU | MEM | encoder-group for a given total
+// width. Factored out so the SM meter below can ask what the split would look
+// like if it took its column, instead of guessing a safe threshold.
+static void line3_split(unsigned totalcol, unsigned spacer, int *size_gpu, int *size_mem, int *size_encode,
+                        int *size_decode) {
+  int remaining_cols = (int)totalcol - 3 * (int)spacer;
+  int quot = remaining_cols / 3;
+  int rem = remaining_cols % 3;
+  *size_gpu = *size_mem = *size_encode = quot;
+  switch (rem) {
+  case 2:
+    if (*size_encode % 2 == 1)
+      *size_encode += 1;
+    else
+      *size_mem += 1;
+    /* Falls through */
+  case 1:
+    *size_gpu += 1;
+    break;
+  }
+
+  if (*size_encode % 2 == 1) {
+    *size_mem += 1;
+    *size_encode -= 1;
+  }
+
+  if (*size_encode / 2 < 14) {
+    *size_encode += 2;
+    *size_gpu -= 1;
+    *size_mem -= 1;
+  }
+
+  *size_decode = *size_encode / 2;
+  if (*size_encode % 2 == 1)
+    *size_encode += 1;
+  *size_encode /= 2;
+}
+
+// Width of the SM occupancy meter on the utilization line. The bar spans
+// cols - 5 cells and the percentage is right-aligned over its tail, so at 16
+// columns roughly eight cells stay visible at 100%. Same scale as the
+// existing narrow ENC/DEC meters.
+#define SM_METER_WIDTH 12u
+// The memory meter is the one that overflows first: "MEM[" + "]" is 5 and the
+// text inside can reach "123.456Gi/123.456Gi", 19 columns. draw_percentage_meter
+// right-aligns that text by moving left from the closing bracket, so anything
+// narrower than 24 writes over the label itself. Two bar cells on top of that.
+#define MEM_METER_MIN_COLS 24
+
+static void alloc_device_window(unsigned int start_row, unsigned int start_col, unsigned int totalcol, bool with_sm,
                                 struct device_window *dwin) {
 
   const unsigned int spacer = 1;
+
+  // Reserve the SM column at the right end first, so that every GPU/MEM and
+  // encoder/decoder width below -- including the auto-hide variants -- is
+  // computed against the remaining space and needs no further adjustment.
+  //
+  // On a terminal narrower than one device row, the layout hands out more
+  // columns than exist and lets ncurses clip the overflow; the SM column
+  // would land in that clipped region, so it is dropped instead and the
+  // existing meters keep the behaviour they have today.
+  int screen_rows, screen_cols;
+  getmaxyx(stdscr, screen_rows, screen_cols);
+  (void)screen_rows;
+  bool row_is_visible = screen_cols > 0 && start_col + totalcol <= (unsigned int)screen_cols;
+
+  dwin->sm_util = NULL;
+  if (with_sm && row_is_visible && totalcol > SM_METER_WIDTH + spacer) {
+    int would_be_gpu, would_be_mem, would_be_encode, would_be_decode;
+    line3_split(totalcol - SM_METER_WIDTH - spacer, spacer, &would_be_gpu, &would_be_mem, &would_be_encode,
+                &would_be_decode);
+    if (would_be_mem >= MEM_METER_MIN_COLS) {
+      totalcol -= SM_METER_WIDTH + spacer;
+      dwin->sm_util = newwin(1, SM_METER_WIDTH, start_row + 2, start_col + totalcol + spacer);
+      if (dwin->sm_util == NULL)
+        goto alloc_error;
+    }
+  }
 
   // Line 1 = Name | PCIe info
 
@@ -97,39 +172,8 @@ static void alloc_device_window(unsigned int start_row, unsigned int start_col, 
 
   // Line 3 = GPU used | MEM used | Encoder | Decoder
 
-  int remaining_cols = totalcol - 3 * spacer;
   int size_gpu, size_mem, size_encode, size_decode;
-  int quot, rem;
-  quot = remaining_cols / 3;
-  rem = remaining_cols % 3;
-  size_gpu = size_mem = size_encode = quot;
-  switch (rem) {
-  case 2:
-    if (size_encode % 2 == 1)
-      size_encode += 1;
-    else
-      size_mem += 1;
-    /* Falls through */
-  case 1:
-    size_gpu += 1;
-    break;
-  }
-
-  if (size_encode % 2 == 1) {
-    size_mem += 1;
-    size_encode -= 1;
-  }
-
-  if (size_encode / 2 < 14) {
-    size_encode += 2;
-    size_gpu -= 1;
-    size_mem -= 1;
-  }
-
-  size_decode = size_encode / 2;
-  if (size_encode % 2 == 1)
-    size_encode += 1;
-  size_encode /= 2;
+  line3_split(totalcol, spacer, &size_gpu, &size_mem, &size_encode, &size_decode);
 
   dwin->gpu_util_enc_dec = newwin(1, size_gpu, start_row + 2, start_col);
   if (dwin->gpu_util_enc_dec == NULL)
@@ -196,6 +240,8 @@ static void free_device_windows(struct device_window *dwin) {
   delwin(dwin->encode_util);
   delwin(dwin->decode_util);
   delwin(dwin->encdec_util);
+  if (dwin->sm_util)
+    delwin(dwin->sm_util);
   delwin(dwin->gpu_clock_info);
   delwin(dwin->mem_clock_info);
   delwin(dwin->power_info);
@@ -370,7 +416,11 @@ static void initialize_all_windows(struct nvtop_interface *dwin) {
   alloc_plot_window(devices_count, plot_positions, map_device_to_plot, dwin);
 
   for (unsigned int i = 0; i < devices_count; ++i) {
-    alloc_device_window(device_positions[i].posY, device_positions[i].posX, device_positions[i].sizeX,
+    // gpu_specific_opts keeps the monitored devices first, in the same order
+    // as devices_win, which is what compute_sizes_from_layout above relies on
+    // too.
+    bool with_sm = plot_isset_draw_info(plot_sm_occupancy, dwin->options.gpu_specific_opts[i].to_draw);
+    alloc_device_window(device_positions[i].posY, device_positions[i].posX, device_positions[i].sizeX, with_sm,
                         &dwin->devices_win[i]);
   }
 
@@ -742,6 +792,18 @@ static void draw_devices(struct list_head *devices, struct nvtop_interface *inte
       snprintf(buff, 1024, "N/A");
       draw_percentage_meter(mem_util_win, "MEM", 0, buff);
     }
+    if (dev->sm_util) {
+      if (GPUINFO_DYNAMIC_FIELD_VALID(&device->dynamic_info, sm_occupancy)) {
+        snprintf(buff, 1024, "%u%%", device->dynamic_info.sm_occupancy);
+        draw_percentage_meter(dev->sm_util, "SM", device->dynamic_info.sm_occupancy, buff);
+      } else {
+        // Reached on a GPU without GPM, and for the first refresh or two
+        // while the two-sample diff primes.
+        snprintf(buff, 1024, "N/A");
+        draw_percentage_meter(dev->sm_util, "SM", 0, buff);
+      }
+    }
+
     if (GPUINFO_DYNAMIC_FIELD_VALID(&device->dynamic_info, gpu_temp)) {
       if (!GPUINFO_STATIC_FIELD_VALID(&device->static_info, temperature_slowdown_threshold))
         device->static_info.temperature_slowdown_threshold = 0;

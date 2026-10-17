@@ -77,6 +77,9 @@ struct gpuinfo_static_info {
   unsigned n_exec_engines;
   unsigned engine_count;
   bool integrated_graphics;
+  // NVIDIA only: the driver reports this GPU exposes the GPM counters that
+  // back SM occupancy. Used to decide whether to show the metric by default.
+  bool sm_occupancy_supported;
   bool encode_decode_shared;
   unsigned char valid[(gpuinfo_static_info_count + CHAR_BIT - 1) / CHAR_BIT];
 };

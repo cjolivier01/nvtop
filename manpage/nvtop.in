@@ -96,6 +96,8 @@ Quit.
 .SH DYNAMIC METERS
 .TP
 When the video encoder (ENC) and decoder (DEC) of the GPU are in use, new percentage meters will appear next to the GPU utilization bar. They will disappear automatically after some time of inactivity (see option -E).
+.TP
+On NVIDIA GPUs whose driver reports the NVML GPM counters, an \fBSM\fR meter showing SM occupancy (resident warps against the theoretical maximum, the same figure DCGM reports as DCGM_FI_PROF_SM_OCCUPANCY) appears on the same line, and the metric is also charted. Both are enabled by default and are switched off together per GPU from the \fIChart\fR section of the setup window (\fBF2\fR), or for every GPU with \fB-p\fR. The meter is omitted on terminals too narrow to show it without squeezing the memory meter.
 
 .SH CONFIGURATION FILE
 .LP
