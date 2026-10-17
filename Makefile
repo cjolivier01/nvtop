@@ -17,6 +17,9 @@ PREFIX ?= /usr/local
 # default above. `sudo make install` drops PREFIX from the environment, so a
 # plain install must use whatever `make perf` configured rather than complain.
 PREFIX_IS_EXPLICIT := $(filter-out file default undefined,$(origin PREFIX))
+# Handed to the install recipe through the environment rather than inlined
+# into it, so that a quote in the value cannot break the shell parse.
+export NVTOP_WANTED_PREFIX := $(PREFIX)
 
 # Every build type gets its own directory under build/ so that, for example, a
 # Release and an ASan tree can coexist without reconfiguring each other away.
@@ -87,7 +90,7 @@ install:
 	@if [ -n "$(PREFIX_IS_EXPLICIT)" ]; then \
 		strip_slashes() { printf '%s' "$$1" | sed -e 's|/*$$||'; }; \
 		configured=$$(strip_slashes "$$(sed -n 's|^CMAKE_INSTALL_PREFIX:PATH=||p' "$(RELEASE_DIR)/CMakeCache.txt")"); \
-		wanted=$$(strip_slashes '$(PREFIX)'); \
+		wanted=$$(strip_slashes "$$NVTOP_WANTED_PREFIX"); \
 		if [ "$$configured" != "$$wanted" ]; then \
 			echo "ERROR: $(RELEASE_DIR) was configured with prefix '$$configured', not '$$wanted'." >&2; \
 			echo "       Install there with \`make install PREFIX=$$configured\`, or rebuild for" >&2; \
@@ -139,7 +142,7 @@ print_targets:
 		'install        Install an existing Release build (honors DESTDIR).' \
 		'               Run `make perf` first; this target does not build, so that' \
 		'               `sudo make install` does not leave a root-owned build tree.' \
-		'               The prefix is fixed by `make perf PREFIX=...`, currently $(PREFIX).' \
+		'               The prefix is whatever `make perf PREFIX=...` configured.' \
 		'uninstall      Remove the files listed by the Release build install manifest.' \
 		'' \
 		'Tests' \
