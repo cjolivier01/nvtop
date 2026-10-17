@@ -13,10 +13,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 # itself and binutils (via build-essential) for the strip step.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential \
-      ca-certificates \
       cmake \
       dpkg-dev \
-      file \
       libdrm-dev \
       libncurses-dev \
       libsystemd-dev \

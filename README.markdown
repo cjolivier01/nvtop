@@ -515,15 +515,34 @@ deploy, and the run ends with a per-node summary table.
 
 `nvtop-pin` is installed in the same apt transaction as `nvtop`, so the
 deployed build is not replaced by the distribution's on the next upgrade. Set
-`DEPLOY_PIN=0` to skip it. `undeploy` purges both, which also removes the pin
-file.
+`DEPLOY_PIN=0` to skip it.
+
+**`undeploy` purges any `nvtop`, not just one this tool installed.** It does
+not check where the installed package came from, so running it on a node that
+had the distribution's `nvtop` leaves that node with no `nvtop` at all —
+deploy followed by undeploy is not a round trip. It purges rather than removes
+so that the pin file in `/etc/apt/preferences.d` goes away with it.
 
 Deployed packages are versioned `<project>-1+git<epoch>.<hash>`, so
 redeploying a later commit registers as an upgrade and the summary tells you
-which build each node is running. Other knobs: `PACKAGE_VERSION` to override
-the version, `DEPLOY_OUTPUT_DIR` for the package root, and
-`NVTOP_DEPLOY_SSH_OPTS` for extra ssh/scp options such as
-`-J bastion` or `-i ~/.ssh/lab`.
+which build each node is running. That suffix outranks `3.3.2-1`, and the
+`-1ubuntu1` / `-1build1` forms, but **not** a `3.3.2-2`: if the archive ever
+ships a higher Debian revision of the same upstream version it wins, which is
+what `nvtop-pin` is there to prevent.
+
+Other knobs:
+
+| Variable | Effect |
+| --- | --- |
+| `PACKAGE_VERSION` | Override the derived version |
+| `DEPLOY_OUTPUT_DIR` | Package output root (default: `dist`) |
+| `DEPLOY_PIN=0` | Do not install `nvtop-pin` |
+| `DEB_MAINTAINER` | Maintainer in the package; defaults to your git identity, which ends up in the control file and changelog on every node |
+| `NVTOP_DEPLOY_SSH_OPTS` | Extra ssh/scp options, e.g. `-J bastion` or `-i ~/.ssh/lab`. Use `-o Port=N` rather than `-p`, which means different things to ssh and scp. These are appended after the built-in options, and ssh takes the first value per keyword, so they cannot override `BatchMode` or `ConnectTimeout` |
+| `NVTOP_DEPLOY_SSH_CONNECT_TIMEOUT` | SSH connect timeout in seconds (default: 10) |
+
+Deploy builds from `git archive HEAD` and refuses to run with tracked
+modifications, so commit or stash first.
 
 Troubleshoot
 ------------
