@@ -181,6 +181,15 @@ REMOTE_DETECT
 	NODE_PREVIOUS["${node}"]="${previous:-}"
 	NODE_INSTALLED["${node}"]="${previous:-}"
 
+	# Removing packages needs no build, so undeploy does not care which
+	# release or architecture the node is: refusing to clean up a node we
+	# can no longer build for would be the wrong way round.
+	if [ "${OPERATION}" != deploy ]; then
+		printf '[%s] %s: %s, installed nvtop: %s\n' \
+			"${OPERATION}" "${node}" "${NODE_OS[${node}]}" "${previous:-not installed}"
+		return 0
+	fi
+
 	if ! release="$(ubuntu_release "${os_id}" "${os_version}" "${id_like}" "${codename}")" ||
 		[ -z "${release}" ]; then
 		NODE_TARGET["${node}"]="unsupported"
@@ -199,7 +208,7 @@ REMOTE_DETECT
 		return 1
 		;;
 	esac
-	if [ "${OPERATION}" = deploy ] && [ "${architecture}" != "${HOST_ARCH}" ]; then
+	if [ "${architecture}" != "${HOST_ARCH}" ]; then
 		NODE_TARGET["${node}"]="unsupported"
 		NODE_RESULT["${node}"]="FAILED"
 		NODE_DETAIL["${node}"]="architecture ${architecture} != build host ${HOST_ARCH}"

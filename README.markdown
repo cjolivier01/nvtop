@@ -459,6 +459,56 @@ ships today — but `-1` is the lowest plausible Debian revision, so any future
 flags as `package-installs-apt-preferences`; it is meant for local use, not
 for upload to an archive.
 
+### Building against another Ubuntu release
+
+`make deb` produces a package for the machine that ran it: `dpkg-shlibdeps`
+reads the dependency versions off the binary it was handed. Built here on
+26.04 the package declares `libc6 (>= 2.38)`, which installs on 24.04 but is
+*uninstallable* on 22.04, whose glibc is 2.35. `make deb-docker` builds inside
+a container of the target release instead, so the ABI baseline matches the
+machine the package is for — the same source in a 22.04 container declares
+`libc6 (>= 2.34)` and installs there.
+
+```bash
+make deb-docker                   # the TARGET_UBUNTU default, 24.04
+make deb-ubuntu22                 # or -ubuntu24, -ubuntu26
+make deb-docker TARGET_UBUNTU=26.04
+```
+
+Packages land in `dist/ubuntu<release>/`. Needs Docker. The container is fed
+`git archive HEAD`, never the working tree, so the package corresponds to a
+commit — the build refuses to run with tracked modifications.
+
+### Deploying to other machines
+
+`make deploy NODES=...` detects each node over SSH, builds one package per
+distinct Ubuntu release in the set, uploads it, and installs it with apt so
+the dependencies resolve:
+
+```bash
+make deploy   NODES=workstation,lab-01,lab-02
+make undeploy NODES=workstation,lab-01,lab-02
+```
+
+Nodes need non-interactive SSH and passwordless `sudo`, and must be Ubuntu
+22.04, 24.04 or 26.04 (or a derivative, matched on `UBUNTU_CODENAME`) on the
+same architecture as the build host — the containers build natively, so
+cross-architecture nodes are reported as unsupported rather than attempted. A
+node that is unreachable or unsupported fails on its own; the others still
+deploy, and the run ends with a per-node summary table.
+
+`nvtop-pin` is installed in the same apt transaction as `nvtop`, so the
+deployed build is not replaced by the distribution's on the next upgrade. Set
+`DEPLOY_PIN=0` to skip it. `undeploy` purges both, which also removes the pin
+file.
+
+Deployed packages are versioned `<project>-1+git<epoch>.<hash>`, so
+redeploying a later commit registers as an upgrade and the summary tells you
+which build each node is running. Other knobs: `PACKAGE_VERSION` to override
+the version, `DEPLOY_OUTPUT_DIR` for the package root, and
+`NVTOP_DEPLOY_SSH_OPTS` for extra ssh/scp options such as
+`-J bastion` or `-i ~/.ssh/lab`.
+
 Troubleshoot
 ------------
 
