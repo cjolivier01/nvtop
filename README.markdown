@@ -433,6 +433,11 @@ make perf && sudo make install  # Install (DESTDIR is honored)
 make distclean    # Remove build/ and dist/ entirely
 ```
 
+`uninstall` removes exactly the files recorded in the build tree's install
+manifest, then deletes any directory the install left empty, walking up to but
+never including the prefix. It therefore needs the build tree the install came
+from; without that manifest it refuses rather than guess.
+
 `install` deliberately does not build: compiling under `sudo` would leave the
 build tree owned by root and break the next unprivileged `make perf`. The
 install prefix therefore belongs to the configure step — use

@@ -119,12 +119,44 @@ install:
 	fi
 	$(CMAKE) --install "$(RELEASE_DIR)"
 
+# Removes exactly what this build tree installed, from the manifest CMake
+# wrote, then prunes any directory the install left empty -- walking up to but
+# never including the prefix itself, since nothing records whether the prefix
+# pre-existed.
 uninstall:
-	@if [ ! -f "$(RELEASE_DIR)/install_manifest.txt" ]; then \
-		echo 'ERROR: no install manifest in $(RELEASE_DIR); nothing was installed from this build tree.' >&2; \
+	@manifest="$(RELEASE_DIR)/install_manifest.txt"; \
+	if [ ! -f "$$manifest" ]; then \
+		echo "ERROR: no install manifest at $$manifest." >&2; \
+		echo "       uninstall removes what this build tree installed, so run it from" >&2; \
+		echo "       the tree the install came from, or \`make perf && make install\` again" >&2; \
+		echo "       with the same PREFIX first." >&2; \
 		exit 2; \
-	fi
-	$(CMAKE) --build "$(RELEASE_DIR)" --target uninstall
+	fi; \
+	configured=$$(sed -n 's|^CMAKE_INSTALL_PREFIX:PATH=||p' "$(RELEASE_DIR)/CMakeCache.txt" 2>/dev/null); \
+	root="$(DESTDIR)$$configured"; \
+	dirlist=$$(mktemp) || exit $$?; \
+	: "CMake writes the manifest without a trailing newline, so the read loop" ; \
+	: "below must also accept a final unterminated line or it drops a file." ; \
+	trap 'rm -f "$$dirlist"' EXIT; \
+	while IFS= read -r entry || [ -n "$$entry" ]; do \
+		[ -n "$$entry" ] || continue; \
+		path="$(DESTDIR)$$entry"; \
+		if [ -e "$$path" ] || [ -L "$$path" ]; then \
+			echo "  removing $$path"; \
+			rm -f -- "$$path" || exit $$?; \
+		else \
+			echo "  already gone: $$path"; \
+		fi; \
+		dirname -- "$$path" >>"$$dirlist"; \
+	done <"$$manifest"; \
+	[ -n "$$configured" ] || exit 0; \
+	sort -ru "$$dirlist" | while IFS= read -r dir; do \
+		while [ -n "$$dir" ] && [ "$$dir" != "$$root" ] && [ "$$dir" != "/" ]; do \
+			rmdir -- "$$dir" 2>/dev/null || break; \
+			echo "  removed empty directory $$dir"; \
+			dir=$$(dirname -- "$$dir"); \
+		done; \
+	done
 
 deb:
 	@echo "Debian package output directory: $(DEB_OUTPUT_DIR)"
@@ -206,7 +238,8 @@ print_targets:
 		'               Run `make perf` first; this target does not build, so that' \
 		'               `sudo make install` does not leave a root-owned build tree.' \
 		'               The prefix is whatever `make perf PREFIX=...` configured.' \
-		'uninstall      Remove the files listed by the Release build install manifest.' \
+		'uninstall      Remove the files this build tree installed, per its install' \
+		'               manifest, and any directory left empty (never the prefix).' \
 		'' \
 		'Packaging' \
 		'---------' \
