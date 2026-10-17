@@ -55,12 +55,54 @@ static unsigned int sizeof_process_field[process_field_count] = {
     [process_cpu_usage] = 6, [process_cpu_mem_usage] = 9, [process_command] = 0,
 };
 
-// Width of the SM occupancy meter on the utilization line. "SM[" + "100%" +
-// "]" is 8, so this leaves eight columns of bar.
-#define SM_METER_WIDTH 16u
-// Below this, carving the SM column out would squeeze GPU/MEM/ENC/DEC into
-// something unreadable, so the meter is dropped instead.
-#define SM_METER_MIN_REMAINING 60u
+// Split the utilization line into GPU | MEM | encoder-group for a given total
+// width. Factored out so the SM meter below can ask what the split would look
+// like if it took its column, instead of guessing a safe threshold.
+static void line3_split(unsigned totalcol, unsigned spacer, int *size_gpu, int *size_mem, int *size_encode,
+                        int *size_decode) {
+  int remaining_cols = (int)totalcol - 3 * (int)spacer;
+  int quot = remaining_cols / 3;
+  int rem = remaining_cols % 3;
+  *size_gpu = *size_mem = *size_encode = quot;
+  switch (rem) {
+  case 2:
+    if (*size_encode % 2 == 1)
+      *size_encode += 1;
+    else
+      *size_mem += 1;
+    /* Falls through */
+  case 1:
+    *size_gpu += 1;
+    break;
+  }
+
+  if (*size_encode % 2 == 1) {
+    *size_mem += 1;
+    *size_encode -= 1;
+  }
+
+  if (*size_encode / 2 < 14) {
+    *size_encode += 2;
+    *size_gpu -= 1;
+    *size_mem -= 1;
+  }
+
+  *size_decode = *size_encode / 2;
+  if (*size_encode % 2 == 1)
+    *size_encode += 1;
+  *size_encode /= 2;
+}
+
+// Width of the SM occupancy meter on the utilization line. The bar spans
+// cols - 5 cells and the percentage is right-aligned over its tail, so at 16
+// columns roughly eight cells stay visible at 100%. Same scale as the
+// existing narrow ENC/DEC meters.
+#define SM_METER_WIDTH 12u
+// The memory meter is the one that overflows first: "MEM[" + "]" is 5 and the
+// text inside can reach "123.456Gi/123.456Gi", 19 columns. draw_percentage_meter
+// right-aligns that text by moving left from the closing bracket, so anything
+// narrower than 24 writes over the label itself. Two bar cells on top of that.
+#define MEM_METER_MIN_COLS 24
 
 static void alloc_device_window(unsigned int start_row, unsigned int start_col, unsigned int totalcol, bool with_sm,
                                 struct device_window *dwin) {
@@ -81,11 +123,16 @@ static void alloc_device_window(unsigned int start_row, unsigned int start_col, 
   bool row_is_visible = screen_cols > 0 && start_col + totalcol <= (unsigned int)screen_cols;
 
   dwin->sm_util = NULL;
-  if (with_sm && row_is_visible && totalcol > SM_METER_WIDTH + spacer + SM_METER_MIN_REMAINING) {
-    totalcol -= SM_METER_WIDTH + spacer;
-    dwin->sm_util = newwin(1, SM_METER_WIDTH, start_row + 2, start_col + totalcol + spacer);
-    if (dwin->sm_util == NULL)
-      goto alloc_error;
+  if (with_sm && row_is_visible && totalcol > SM_METER_WIDTH + spacer) {
+    int would_be_gpu, would_be_mem, would_be_encode, would_be_decode;
+    line3_split(totalcol - SM_METER_WIDTH - spacer, spacer, &would_be_gpu, &would_be_mem, &would_be_encode,
+                &would_be_decode);
+    if (would_be_mem >= MEM_METER_MIN_COLS) {
+      totalcol -= SM_METER_WIDTH + spacer;
+      dwin->sm_util = newwin(1, SM_METER_WIDTH, start_row + 2, start_col + totalcol + spacer);
+      if (dwin->sm_util == NULL)
+        goto alloc_error;
+    }
   }
 
   // Line 1 = Name | PCIe info
@@ -125,39 +172,8 @@ static void alloc_device_window(unsigned int start_row, unsigned int start_col, 
 
   // Line 3 = GPU used | MEM used | Encoder | Decoder
 
-  int remaining_cols = totalcol - 3 * spacer;
   int size_gpu, size_mem, size_encode, size_decode;
-  int quot, rem;
-  quot = remaining_cols / 3;
-  rem = remaining_cols % 3;
-  size_gpu = size_mem = size_encode = quot;
-  switch (rem) {
-  case 2:
-    if (size_encode % 2 == 1)
-      size_encode += 1;
-    else
-      size_mem += 1;
-    /* Falls through */
-  case 1:
-    size_gpu += 1;
-    break;
-  }
-
-  if (size_encode % 2 == 1) {
-    size_mem += 1;
-    size_encode -= 1;
-  }
-
-  if (size_encode / 2 < 14) {
-    size_encode += 2;
-    size_gpu -= 1;
-    size_mem -= 1;
-  }
-
-  size_decode = size_encode / 2;
-  if (size_encode % 2 == 1)
-    size_encode += 1;
-  size_encode /= 2;
+  line3_split(totalcol, spacer, &size_gpu, &size_mem, &size_encode, &size_decode);
 
   dwin->gpu_util_enc_dec = newwin(1, size_gpu, start_row + 2, start_col);
   if (dwin->gpu_util_enc_dec == NULL)

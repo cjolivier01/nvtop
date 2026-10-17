@@ -267,6 +267,10 @@ int main(int argc, char **argv) {
 
   unsigned numWarningMessages = 0;
   const char **warningMessages;
+  // Before the interface options below: the per-device chart defaults consult
+  // static info to decide whether a GPU can produce SM occupancy at all.
+  gpuinfo_populate_static_infos(&monitoredGpus);
+
   get_info_messages(&monitoredGpus, &numWarningMessages, &warningMessages);
 
   nvtop_interface_option allDevicesOptions;
@@ -277,9 +281,14 @@ int main(int argc, char **argv) {
     if (!plot_isset_draw_info(plot_information_count, allDevicesOptions.gpu_specific_opts[i].to_draw)) {
       plot_info_to_draw to_draw = plot_default_draw_info();
       // SM occupancy comes from NVML GPM, so it is defaulted on per device
-      // rather than in plot_default_draw_info(), which knows no vendors.
+      // rather than in plot_default_draw_info(), which knows no vendors, and
+      // only where the driver says the counters exist -- otherwise the GPU
+      // would get a meter reading N/A and a chart line pinned at zero. The
+      // vendor check keeps the static-info field from being read for a
+      // backend that never sets it.
       struct gpu_info *gpu = allDevicesOptions.gpu_specific_opts[i].linkedGpu;
-      if (gpu && gpu->vendor && gpu->vendor->name && strcmp(gpu->vendor->name, "NVIDIA") == 0) {
+      if (gpu && gpu->vendor && gpu->vendor->name && strcmp(gpu->vendor->name, "NVIDIA") == 0 &&
+          gpu->static_info.sm_occupancy_supported) {
         to_draw = plot_add_draw_info(plot_sm_occupancy, to_draw);
       }
       allDevicesOptions.gpu_specific_opts[i].to_draw = to_draw;
@@ -315,7 +324,6 @@ int main(int argc, char **argv) {
     allDevicesOptions.update_interval = update_interval_option;
   allDevicesOptions.has_gpu_info_bar = allDevicesOptions.has_gpu_info_bar || show_gpu_info_bar;
 
-  gpuinfo_populate_static_infos(&monitoredGpus);
   unsigned numMonitoredGpus =
       interface_check_and_fix_monitored_gpus(allDevCount, &monitoredGpus, &nonMonitoredGpus, &allDevicesOptions);
 

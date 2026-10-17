@@ -3,6 +3,7 @@
 #include "nvtop/interface_options.h"
 
 #include <assert.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -103,6 +104,11 @@ static unsigned size_differences_between_stacks(unsigned plot_count, unsigned st
   return sum;
 }
 
+// map_device_to_plot entry for a device whose chart had to be dropped to make
+// the rest fit. No plot index can equal it, so the device is simply skipped
+// by info_in_plot() and by alloc_plot_window().
+#define UNPLOTTED_DEVICE UINT_MAX
+
 static void preliminary_plot_positioning(unsigned rows_for_plots, unsigned plot_total_cols, unsigned devices_count,
                                          const nvtop_interface_gpu_opts gpuOpts[devices_count],
                                          unsigned map_device_to_plot[devices_count],
@@ -166,8 +172,32 @@ static void preliminary_plot_positioning(unsigned rows_for_plots, unsigned plot_
                 map_device_to_plot[devId] = map_device_to_plot[to_merge[0]];
             }
             search_a_window_configuration = true;
-          } else { // No merge left
-            num_plot_stacks = 0;
+          } else {
+            // No merge left: every remaining pair would exceed
+            // MAX_LINES_PER_PLOT. Rather than abandon the chart area
+            // entirely, stop plotting the last device and try again, so the
+            // GPUs that do fit keep their charts. Reachable whenever the
+            // per-GPU metric count is high enough that no two charts can be
+            // combined -- three metrics on three GPUs already does it.
+            unsigned last_plotted = devices_count;
+            unsigned plots_left = 0;
+            for (unsigned idx = 0; idx < devices_count; ++idx) {
+              if (num_info_per_plot[idx]) {
+                last_plotted = idx;
+                plots_left++;
+              }
+            }
+            if (plots_left > 1) {
+              num_info_per_plot[last_plotted] = 0;
+              for (unsigned devId = 0; devId < devices_count; ++devId) {
+                if (map_device_to_plot[devId] == last_plotted)
+                  map_device_to_plot[devId] = UNPLOTTED_DEVICE;
+              }
+              search_a_window_configuration = true;
+            } else {
+              // A single chart that still does not fit: nothing to show.
+              num_plot_stacks = 0;
+            }
           }
           break;
         }

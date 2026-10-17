@@ -241,6 +241,12 @@ typedef struct nvmlGpmSample_st *nvmlGpmSample_t;
 #define NVML_GPM_METRIC_SM_OCCUPANCY 3
 #define NVML_GPM_METRIC_MAX 333
 #define NVML_GPM_METRICS_GET_VERSION 1
+#define NVML_GPM_SUPPORT_VERSION 1
+
+typedef struct {
+  unsigned int version;
+  unsigned int isSupportedDevice;
+} nvmlGpmSupport_t;
 
 typedef struct {
   unsigned int metricId;
@@ -265,6 +271,7 @@ static nvmlReturn_t (*nvmlGpmSampleAlloc)(nvmlGpmSample_t *gpmSample);
 static nvmlReturn_t (*nvmlGpmSampleFree)(nvmlGpmSample_t gpmSample);
 static nvmlReturn_t (*nvmlGpmSampleGet)(nvmlDevice_t device, nvmlGpmSample_t gpmSample);
 static nvmlReturn_t (*nvmlGpmMetricsGet)(nvmlGpmMetricsGet_t *metricsGet);
+static nvmlReturn_t (*nvmlGpmQueryDeviceSupport)(nvmlDevice_t device, nvmlGpmSupport_t *gpmSupport);
 
 // nvml.h: the two samples handed to nvmlGpmMetricsGet must be more than 100ms
 // apart, that being the rate at which the counters behind them refresh. Closer
@@ -490,6 +497,7 @@ static bool gpuinfo_nvidia_init(void) {
   nvmlGpmSampleFree = dlsym(libnvidia_ml_handle, "nvmlGpmSampleFree");
   nvmlGpmSampleGet = dlsym(libnvidia_ml_handle, "nvmlGpmSampleGet");
   nvmlGpmMetricsGet = dlsym(libnvidia_ml_handle, "nvmlGpmMetricsGet");
+  nvmlGpmQueryDeviceSupport = dlsym(libnvidia_ml_handle, "nvmlGpmQueryDeviceSupport");
 
   last_nvml_return_status = nvmlInit();
   if (last_nvml_return_status != NVML_SUCCESS) {
@@ -596,6 +604,18 @@ static void gpuinfo_nvidia_populate_static_info(struct gpu_info *_gpu_info) {
   nvmlDevice_t device = gpu_info->gpuhandle;
 
   static_info->integrated_graphics = false;
+  // Ask the driver whether this GPU has the GPM counters, so SM occupancy is
+  // only offered by default where it can actually produce a reading. The
+  // version field must be exactly 1: anything else, including a zeroed
+  // struct, comes back ARGUMENT_VERSION_MISMATCH with isSupportedDevice
+  // cleared, which would read as "unsupported". This is only a hint -- the
+  // sampling path still gives up on its own if the device refuses.
+  static_info->sm_occupancy_supported = false;
+  if (nvmlGpmQueryDeviceSupport) {
+    nvmlGpmSupport_t gpm_support = {.version = NVML_GPM_SUPPORT_VERSION, .isSupportedDevice = 0};
+    if (nvmlGpmQueryDeviceSupport(device, &gpm_support) == NVML_SUCCESS && gpm_support.isSupportedDevice)
+      static_info->sm_occupancy_supported = true;
+  }
   static_info->encode_decode_shared = false;
   RESET_ALL(static_info->valid);
 
