@@ -132,9 +132,17 @@ GPU without the counters is simply not offered the metric rather than being
 given a meter reading `N/A` and a chart line pinned at zero. If you enable it
 by hand on such a GPU, that is what you get.
 
-The meter needs roughly 92 columns of device row to appear; below that it is
-dropped so the memory meter keeps the width its text needs. The chart series
-is unaffected by terminal width.
+The meter needs enough room on the device row to sit beside GPU, MEM and the
+encoder/decoder meters without squeezing the memory meter below its own text,
+and is dropped when there is not. Note that row is sized from the longest GPU
+name, not from your terminal, so widening the terminal will not bring the
+meter back on a machine where it is absent.
+
+Charts are a separate budget: nvtop fits as many as the terminal has room for
+and merges or drops the rest, so on a small terminal with several GPUs a chart
+can disappear — an integrated GPU's goes first. Fewer metrics per GPU means
+more charts fit, which is one reason to switch SM occupancy off if you are
+short of space.
 
 ### Adreno
 

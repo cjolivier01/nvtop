@@ -45,8 +45,8 @@ CMAKE_COMMON_ARGS = -DCMAKE_INSTALL_PREFIX="$(PREFIX)" $(CMAKE_ARGS)
 # Debian packaging. PACKAGE_VERSION defaults to the version in CMakeLists.txt.
 DEB_OUTPUT_DIR ?= $(TOPDIR)/dist
 PACKAGE_VERSION ?=
-MAKE_DEB_ARGS = --output-dir="$(DEB_OUTPUT_DIR)" --jobs=$(strip $(CMAKE_JOBS)) \
-	$(if $(PACKAGE_VERSION),--version="$(PACKAGE_VERSION)",)
+MAKE_DEB_ARGS = --output-dir="$$NVTOP_DEB_OUTPUT_DIR" --jobs="$$NVTOP_JOBS" \
+	$${NVTOP_PACKAGE_VERSION:+--version="$$NVTOP_PACKAGE_VERSION"}
 
 # Containerized packaging and deployment. TARGET_UBUNTU picks the ABI baseline
 # the package is built against; NODES is the comma-separated SSH node list.
@@ -54,8 +54,9 @@ TARGET_UBUNTU ?= 24.04
 NODES ?=
 DEPLOY_OUTPUT_DIR ?= $(DEB_OUTPUT_DIR)
 export NVTOP_NODES := $(NODES)
-export NVTOP_TARGET_UBUNTU := $(TARGET_UBUNTU)
+export NVTOP_TARGET_UBUNTU := $(strip $(TARGET_UBUNTU))
 export NVTOP_DEB_OUTPUT_DIR := $(DEB_OUTPUT_DIR)
+export NVTOP_JOBS := $(strip $(CMAKE_JOBS))
 export NVTOP_PACKAGE_VERSION := $(PACKAGE_VERSION)
 export NVTOP_DEPLOY_OUTPUT_DIR := $(DEPLOY_OUTPUT_DIR)
 
@@ -127,19 +128,19 @@ uninstall:
 
 deb:
 	@echo "Debian package output directory: $(DEB_OUTPUT_DIR)"
-	"$(TOPDIR)/packaging/make_deb.sh" $(MAKE_DEB_ARGS)
+	@"$(TOPDIR)/packaging/make_deb.sh" $(MAKE_DEB_ARGS)
 
 deb-only:
-	"$(TOPDIR)/packaging/make_deb.sh" $(MAKE_DEB_ARGS) --deb-only
+	@"$(TOPDIR)/packaging/make_deb.sh" $(MAKE_DEB_ARGS) --deb-only
 
 deb-pin:
-	"$(TOPDIR)/packaging/make_deb.sh" $(MAKE_DEB_ARGS) --pin-only
+	@"$(TOPDIR)/packaging/make_deb.sh" $(MAKE_DEB_ARGS) --pin-only
 
 deb-docker:
 	@"$(TOPDIR)/packaging/make_deb_docker.sh" \
 		--target-ubuntu="$$NVTOP_TARGET_UBUNTU" \
 		--output-dir="$$NVTOP_DEB_OUTPUT_DIR/ubuntu$$NVTOP_TARGET_UBUNTU" \
-		--jobs=$(strip $(CMAKE_JOBS)) \
+		--jobs="$$NVTOP_JOBS" \
 		$${NVTOP_PACKAGE_VERSION:+--version="$$NVTOP_PACKAGE_VERSION"}
 
 deb-ubuntu22:
@@ -159,7 +160,7 @@ deploy:
 	@NODES="$$NVTOP_NODES" \
 	PACKAGE_VERSION="$$NVTOP_PACKAGE_VERSION" \
 	DEPLOY_OUTPUT_DIR="$$NVTOP_DEPLOY_OUTPUT_DIR" \
-	DEPLOY_JOBS=$(strip $(CMAKE_JOBS)) \
+	DEPLOY_JOBS="$$NVTOP_JOBS" \
 	"$(TOPDIR)/packaging/deploy.sh"
 
 undeploy:
@@ -180,7 +181,7 @@ clean:
 	[ "$$cleaned" = 1 ] || echo "Nothing to clean: no configured build directory under $(BUILD_ROOT)."
 
 distclean expunge:
-	rm -rf "$(BUILD_ROOT)" "$(DEB_OUTPUT_DIR)"
+	@rm -rf "$(BUILD_ROOT)" "$$NVTOP_DEB_OUTPUT_DIR"
 
 print_targets:
 	@printf '%s\n' \
@@ -222,6 +223,7 @@ print_targets:
 		'deploy         Build and install on comma-separated NODES over SSH (required).' \
 		'               One package per distinct Ubuntu release in the set.' \
 		'undeploy       Purge nvtop and nvtop-pin from comma-separated NODES.' \
+		'               Purges any nvtop, including a distribution-installed one.' \
 		'' \
 		'Tests' \
 		'-----' \

@@ -93,16 +93,17 @@ static void line3_split(unsigned totalcol, unsigned spacer, int *size_gpu, int *
   *size_encode /= 2;
 }
 
-// Width of the SM occupancy meter on the utilization line. The bar spans
-// cols - 5 cells and the percentage is right-aligned over its tail, so at 16
-// columns roughly eight cells stay visible at 100%. Same scale as the
-// existing narrow ENC/DEC meters.
+// Width of the SM occupancy meter on the utilization line. "SM" + brackets
+// costs 4, so the bar spans 8 cells and the right-aligned "100%" covers four
+// of them. Same scale as the existing narrow ENC/DEC meters.
 #define SM_METER_WIDTH 12u
-// The memory meter is the one that overflows first: "MEM[" + "]" is 5 and the
-// text inside can reach "123.456Gi/123.456Gi", 19 columns. draw_percentage_meter
-// right-aligns that text by moving left from the closing bracket, so anything
-// narrower than 24 writes over the label itself. Two bar cells on top of that.
-#define MEM_METER_MIN_COLS 24
+// "MEM" + "[" + "]" around the text.
+#define MEM_METER_OVERHEAD 5
+// The memory meter is the one that runs out of room first. Its shortest form
+// is "999.9/999.9Gi", 13 columns, so 5 of overhead plus one cell of bar is the
+// least it can be given without format_used_total_memory() having to fall
+// back to whole gigabytes. Anything narrower and the SM column is not taken.
+#define MEM_METER_MIN_COLS (MEM_METER_OVERHEAD + 13 + 1)
 
 static void alloc_device_window(unsigned int start_row, unsigned int start_col, unsigned int totalcol, bool with_sm,
                                 struct device_window *dwin) {
@@ -240,8 +241,7 @@ static void free_device_windows(struct device_window *dwin) {
   delwin(dwin->encode_util);
   delwin(dwin->decode_util);
   delwin(dwin->encdec_util);
-  if (dwin->sm_util)
-    delwin(dwin->sm_util);
+  delwin(dwin->sm_util);
   delwin(dwin->gpu_clock_info);
   delwin(dwin->mem_clock_info);
   delwin(dwin->power_info);
@@ -562,6 +562,30 @@ static void draw_percentage_meter_with_yellow_highlight(WINDOW *win, const char 
 
 static const char *memory_prefix[] = {" B", "Ki", "Mi", "Gi", "Ti", "Pi"};
 
+// Write the widest used/total summary that fits in `budget` columns.
+//
+// The utilization row is sized from the longest GPU name, not from the
+// terminal, so the memory meter can be narrower than "123.456Gi/123.456Gi"
+// needs however wide the window is -- and draw_percentage_meter right-aligns
+// this text by moving left from the closing bracket, so an overlong string
+// lands on top of the "MEM[" label. Falling back to a shorter form keeps the
+// label intact and is what lets the SM column be carved out of rows that
+// could not otherwise spare it.
+static void format_used_total_memory(char *buff, size_t buff_size, int budget, double used, double total) {
+  double used_prefixed = used, total_prefixed = total;
+  size_t prefix_off;
+  for (prefix_off = 0; prefix_off < 5 && total_prefixed >= 1000.; ++prefix_off) {
+    total_prefixed /= 1024.;
+    used_prefixed /= 1024.;
+  }
+  const char *unit = memory_prefix[prefix_off];
+  if (snprintf(buff, buff_size, "%.3f%s/%.3f%s", used_prefixed, unit, total_prefixed, unit) <= budget)
+    return;
+  if (snprintf(buff, buff_size, "%.1f/%.1f%s", used_prefixed, total_prefixed, unit) <= budget)
+    return;
+  snprintf(buff, buff_size, "%.0f/%.0f%s", used_prefixed, total_prefixed, unit);
+}
+
 static void draw_temp_color(WINDOW *win, unsigned int temp, unsigned int temp_slowdown, bool celsius) {
   unsigned int temp_convert;
   if (celsius)
@@ -770,14 +794,7 @@ static void draw_devices(struct list_head *devices, struct nvtop_interface *inte
         GPUINFO_DYNAMIC_FIELD_VALID(&device->dynamic_info, used_memory)) {
       double total_mem = device->dynamic_info.total_memory;
       double used_mem = device->dynamic_info.used_memory;
-      double total_prefixed = total_mem, used_prefixed = used_mem;
-      size_t prefix_off;
-      for (prefix_off = 0; prefix_off < 5 && total_prefixed >= 1000.; ++prefix_off) {
-        total_prefixed /= 1024.;
-        used_prefixed /= 1024.;
-      }
-      snprintf(buff, 1024, "%.3f%s/%.3f%s", used_prefixed, memory_prefix[prefix_off], total_prefixed,
-               memory_prefix[prefix_off]);
+      format_used_total_memory(buff, 1024, getmaxx(mem_util_win) - MEM_METER_OVERHEAD, used_mem, total_mem);
       draw_percentage_meter(mem_util_win, "MEM", (unsigned int)(100. * used_mem / total_mem), buff);
     } else if (GPUINFO_DYNAMIC_FIELD_VALID(&device->dynamic_info, total_memory)) {
       double total_mem = device->dynamic_info.total_memory;
