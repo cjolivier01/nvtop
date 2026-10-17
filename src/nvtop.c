@@ -275,7 +275,14 @@ int main(int argc, char **argv) {
   for (unsigned i = 0; i < allDevCount; ++i) {
     // Nothing specified in the file
     if (!plot_isset_draw_info(plot_information_count, allDevicesOptions.gpu_specific_opts[i].to_draw)) {
-      allDevicesOptions.gpu_specific_opts[i].to_draw = plot_default_draw_info();
+      plot_info_to_draw to_draw = plot_default_draw_info();
+      // SM occupancy comes from NVML GPM, so it is defaulted on per device
+      // rather than in plot_default_draw_info(), which knows no vendors.
+      struct gpu_info *gpu = allDevicesOptions.gpu_specific_opts[i].linkedGpu;
+      if (gpu && gpu->vendor && gpu->vendor->name && strcmp(gpu->vendor->name, "NVIDIA") == 0) {
+        to_draw = plot_add_draw_info(plot_sm_occupancy, to_draw);
+      }
+      allDevicesOptions.gpu_specific_opts[i].to_draw = to_draw;
     } else {
       allDevicesOptions.gpu_specific_opts[i].to_draw =
           plot_remove_draw_info(plot_information_count, allDevicesOptions.gpu_specific_opts[i].to_draw);

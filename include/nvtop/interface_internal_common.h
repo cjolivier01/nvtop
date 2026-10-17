@@ -60,6 +60,7 @@ struct device_window {
   WINDOW *encode_util;
   WINDOW *decode_util;
   WINDOW *encdec_util;
+  WINDOW *sm_util; // NULL when SM occupancy is off for this GPU, or no room for it
   WINDOW *fan_speed;
   WINDOW *temperature;
   WINDOW *power_info;
