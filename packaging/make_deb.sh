@@ -88,7 +88,7 @@ done
 	die "--deb-only and --pin-only together leave nothing to build"
 [ -n "${OUTPUT_DIR}" ] || die "--output-dir needs a value"
 case "${JOBS}" in
-*[!0-9]* | "") die "--jobs needs a positive integer, got '${JOBS}'" ;;
+*[!0-9]* | "" | 0 | 0*) die "--jobs needs a positive integer, got '${JOBS}'" ;;
 esac
 mkdir -p "${OUTPUT_DIR}"
 OUTPUT_DIR="$(cd -- "${OUTPUT_DIR}" && pwd)"
@@ -162,18 +162,23 @@ EOF
 # field an estimate, and it lands within a few KiB of what dpkg would say.
 # $1 = staging directory
 installed_size_kib() {
-	find "$1" \( -type f -printf 'f %s\n' \) -o \( -type d -printf 'd 0\n' \) |
+	find "$1" \( -type d -printf 'd 0\n' \) -o -printf 'f %s\n' |
 		awk '$1 == "d" { kib += 1; next } { kib += int(($2 + 1023) / 1024) } END { print kib + 0 }'
 }
 
 # Drop anything listed in ./DEBIAN/conffiles from a NUL-separated path list on
 # stdin. grep exits 1 when it selects nothing, which is not an error here.
 filter_out_conffiles() {
-	if [ -f DEBIAN/conffiles ]; then
-		grep -zvxFf <(sed 's|^/||' DEBIAN/conffiles) || [ $? -eq 1 ]
-	else
+	local patterns
+	if [ ! -f DEBIAN/conffiles ]; then
 		cat
+		return
 	fi
+	# Not a process substitution: its exit status is invisible to pipefail, so
+	# a failing sed would silently degrade to "filter nothing".
+	patterns="$(sed 's|^/||' DEBIAN/conffiles)"
+	[ -n "${patterns}" ] || { cat; return; }
+	grep -zvxF -- "${patterns}" || [ $? -eq 1 ]
 }
 
 # $1 = staging directory. Must run after every payload file is in place.

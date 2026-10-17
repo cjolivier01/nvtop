@@ -4,14 +4,18 @@ Upstream-Contact: Maxime Schmitt <maxime.schmitt91@gmail.com>
 Source: https://github.com/Syllo/nvtop
 
 Files: *
-Copyright: 2017-2024 Maxime Schmitt <maxime.schmitt91@gmail.com>
+Copyright: 2012 Lauri Kasanen
+           2017-2024 Maxime Schmitt <maxime.schmitt91@gmail.com>
            2018 Genesis Cloud Ltd.
            2022 Hoream Xiao <horeamx@gmail.com>
            2022 YiFei Zhu <zhuyifei1999@gmail.com>
            2023 Adrian Larumbe <adrian.larumbe@collabora.com>
+           2023 Advanced Micro Devices, Inc.
            2023 Robin Voetter <robin@voetter.nl>
            2023 Ryan Houdek <Sonicadvance1@gmail.com>
            2023 klayer <klayer@163.com>
+           2025 Enflame Technology (Shanghai) Co., Ltd.
+           2025 MetaX Integrated Circuits (Shanghai) Co., Ltd.
            2025 Robert Dyro <robert.dyro@gmail.com>
            2025 YuLong Yao <feilongphone@gmail.com>
 License: GPL-3+
