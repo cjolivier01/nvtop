@@ -19,6 +19,7 @@ DEPLOY_OUTPUT_DIR="${DEPLOY_OUTPUT_DIR:-${REPO_ROOT}/dist}"
 NODES_CSV="${NODES:-}"
 REQUESTED_PACKAGE_VERSION="${PACKAGE_VERSION:-}"
 DEPLOY_PIN="${DEPLOY_PIN:-1}"
+DEPLOY_JOBS="${DEPLOY_JOBS:-}"
 OPERATION="deploy"
 
 SSH_OPTS=(-o BatchMode=yes -o "ConnectTimeout=${SSH_CONNECT_TIMEOUT}")
@@ -37,6 +38,7 @@ declare -A SEEN_TARGETS=()
 declare -A NODE_OS=()
 declare -A NODE_TARGET=()
 declare -A NODE_PREVIOUS=()
+declare -A NODE_RESIDUE=()
 declare -A NODE_INSTALLED=()
 declare -A NODE_RESULT=()
 declare -A NODE_DETAIL=()
@@ -45,6 +47,7 @@ declare -A TARGET_PIN_DEB=()
 declare -A TARGET_BUILD_ERROR=()
 
 PACKAGE_VERSION_RESOLVED=""
+PACKAGE_FILE_VERSION=""
 HOST_ARCH=""
 
 usage() {
@@ -57,12 +60,26 @@ Detects each node over SSH, builds one package per distinct Ubuntu release in
 the set using packaging/make_deb_docker.sh, uploads it, and installs it with
 apt. Nodes must allow non-interactive SSH and passwordless sudo.
 
-Undeploy purges nvtop and nvtop-pin. It leaves shared dependencies installed.
+Undeploy purges nvtop and nvtop-pin (purge, so the apt pin file goes too).
+It does not check where the installed nvtop came from: on a node running the
+distribution's package, undeploy removes that. It leaves shared dependencies
+installed.
 
 Optional make variables:
   PACKAGE_VERSION=VERSION  Override the derived package version.
   DEPLOY_OUTPUT_DIR=DIR    Package output root (default: dist).
   DEPLOY_PIN=0             Do not install nvtop-pin alongside nvtop.
+  DEPLOY_JOBS=N            Parallel compile jobs for the container builds.
+
+Environment:
+  NVTOP_DEPLOY_SSH_OPTS             Extra ssh/scp options, e.g. '-J bastion'.
+                                    Use '-o Port=N', not '-p': scp reads -p
+                                    as preserve-times. Appended after the
+                                    built-in options, so BatchMode and
+                                    ConnectTimeout cannot be overridden here.
+  NVTOP_DEPLOY_SSH_CONNECT_TIMEOUT  SSH connect timeout, seconds (default 10).
+  DEB_MAINTAINER                    Package maintainer; defaults to the git
+                                    identity of this checkout.
 
 Supported nodes are Ubuntu 22.04, 24.04 and 26.04 (and derivatives, matched on
 UBUNTU_CODENAME) on the same architecture as this machine. Cross-architecture
@@ -85,6 +102,12 @@ parse_nodes() {
 		printf 'ERROR: NODES is required. Usage: make %s NODES=node1,node2\n' "${OPERATION}" >&2
 		return 2
 	fi
+	case "${nodes_csv}" in
+	,* | *, | *,,*)
+		printf 'ERROR: NODES contains an empty node name: %s\n' "${nodes_csv}" >&2
+		return 2
+		;;
+	esac
 	IFS=',' read -r -a raw_nodes <<<"${nodes_csv}"
 	for raw_node in "${raw_nodes[@]}"; do
 		node="$(trim "${raw_node}")"
@@ -127,6 +150,20 @@ ubuntu_release() {
 	esac
 }
 
+# make_deb_docker.sh packages git archive HEAD and refuses a dirty tree. It
+# only reaches that check after every node has been contacted, so repeat it
+# here before anything slow or remote happens.
+require_clean_repository() {
+	if ! git -C "${REPO_ROOT}" rev-parse --git-dir >/dev/null 2>&1; then
+		printf 'ERROR: %s is not a git checkout; deploy packages git archive HEAD.\n' "${REPO_ROOT}" >&2
+		return 1
+	fi
+	if ! git -C "${REPO_ROOT}" diff --quiet HEAD -- || ! git -C "${REPO_ROOT}" diff --cached --quiet; then
+		printf 'ERROR: refusing to deploy with tracked changes: commit or stash them first.\n' >&2
+		return 1
+	fi
+}
+
 require_local_commands() {
 	local command_name
 	local -a required=(git ssh sed)
@@ -155,9 +192,16 @@ installed=""
 if [ "$(dpkg-query -W -f='${db:Status-Status}' nvtop 2>/dev/null || true)" = installed ]; then
   installed="$(dpkg-query -W -f='${Version}' nvtop)"
 fi
-printf '__NVTOP_DEPLOY__|%s|%s|%s|%s|%s|%s\n' \
+# Anything undeploy would purge, including a config-files remnant and a
+# stand-alone nvtop-pin: either still owns /etc/apt/preferences.d.
+residue=""
+for package in nvtop nvtop-pin; do
+  status="$(dpkg-query -W -f='${db:Status-Status}' "${package}" 2>/dev/null || true)"
+  if [ -n "${status}" ] && [ "${status}" != "not-installed" ]; then residue="yes"; fi
+done
+printf '__NVTOP_DEPLOY__|%s|%s|%s|%s|%s|%s|%s\n' \
   "${ID:-}" "${VERSION_ID:-}" "${ID_LIKE:-}" "${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}" \
-  "$(dpkg --print-architecture)" "${installed}"
+  "$(dpkg --print-architecture)" "${installed}" "${residue}"
 REMOTE_DETECT
 	)"; then
 		NODE_OS["${node}"]="unknown"
@@ -168,7 +212,7 @@ REMOTE_DETECT
 	fi
 
 	identity="$(printf '%s\n' "${output}" | sed -n '/^__NVTOP_DEPLOY__|/p' | tail -n 1)"
-	IFS='|' read -r marker os_id os_version id_like codename architecture previous extra <<<"${identity}"
+	IFS='|' read -r marker os_id os_version id_like codename architecture previous residue extra <<<"${identity}"
 	if [ "${marker:-}" != "__NVTOP_DEPLOY__" ] || [ -n "${extra:-}" ]; then
 		NODE_OS["${node}"]="unknown"
 		NODE_RESULT["${node}"]="FAILED"
@@ -180,6 +224,7 @@ REMOTE_DETECT
 	NODE_OS["${node}"]="${os_id:-unknown} ${os_version:-unknown} ${architecture:-unknown}"
 	NODE_PREVIOUS["${node}"]="${previous:-}"
 	NODE_INSTALLED["${node}"]="${previous:-}"
+	NODE_RESIDUE["${node}"]="${residue:-}"
 
 	# Removing packages needs no build, so undeploy does not care which
 	# release or architecture the node is: refusing to clean up a node we
@@ -227,8 +272,9 @@ REMOTE_DETECT
 
 # Package version: the project version with the commit folded into the Debian
 # revision, so a redeploy of a later commit is an upgrade rather than a
-# reinstall and the summary says which build is on each node. '+' sorts after
-# a bare revision, so these also outrank the distribution's package.
+# reinstall and the summary says which build is on each node. Note this still
+# loses to a distribution revision of -2 or higher, which is what nvtop-pin is
+# for; it only outranks -1 and the Ubuntu-style -1ubuntu1 / -1build1 forms.
 derive_package_version() {
 	local base commit_epoch short_hash
 	if [ -n "${REQUESTED_PACKAGE_VERSION}" ]; then
@@ -237,10 +283,22 @@ derive_package_version() {
 		base="$(sed -n 's/^[[:space:]]*project(nvtop[[:space:]]\+VERSION[[:space:]]\+\([0-9][^[:space:])]*\).*/\1/p' \
 			"${REPO_ROOT}/CMakeLists.txt" | head -n1)"
 		[ -n "${base}" ] || { printf 'ERROR: could not read the project version from CMakeLists.txt\n' >&2; return 1; }
-		commit_epoch="$(git -C "${REPO_ROOT}" show -s --format=%ct HEAD 2>/dev/null)" || return 1
-		short_hash="$(git -C "${REPO_ROOT}" rev-parse --short=7 HEAD 2>/dev/null)" || return 1
+		if ! commit_epoch="$(git -C "${REPO_ROOT}" show -s --format=%ct HEAD 2>/dev/null)" ||
+			! short_hash="$(git -C "${REPO_ROOT}" rev-parse --short=7 HEAD 2>/dev/null)"; then
+			printf 'ERROR: could not derive a package version from git HEAD in %s.\n' "${REPO_ROOT}" >&2
+			printf '       Pass PACKAGE_VERSION=VERSION to set one explicitly.\n' >&2
+			return 1
+		fi
 		PACKAGE_VERSION_RESOLVED="${base}-1+git${commit_epoch}.${short_hash}"
 	fi
+	# Apply exactly the normalization make_deb.sh does, or the filenames this
+	# script predicts will not be the ones the build writes: a version with no
+	# Debian revision gains "-1", and the epoch is stripped from file names.
+	case "${PACKAGE_VERSION_RESOLVED}" in
+	*-*) ;;
+	*) PACKAGE_VERSION_RESOLVED="${PACKAGE_VERSION_RESOLVED}-1" ;;
+	esac
+	PACKAGE_FILE_VERSION="${PACKAGE_VERSION_RESOLVED#*:}"
 	if ! dpkg --validate-version "${PACKAGE_VERSION_RESOLVED}" >/dev/null 2>&1; then
 		printf 'ERROR: invalid package version: %s\n' "${PACKAGE_VERSION_RESOLVED}" >&2
 		return 1
@@ -258,13 +316,14 @@ build_target() {
 	if ! "${SCRIPT_DIR}/make_deb_docker.sh" \
 		--target-ubuntu="${release}" \
 		--output-dir="${output_dir}" \
+		${DEPLOY_JOBS:+--jobs="${DEPLOY_JOBS}"} \
 		--version="${PACKAGE_VERSION_RESOLVED}"; then
 		TARGET_BUILD_ERROR["${target_key}"]="package build failed for Ubuntu ${release}"
 		return 1
 	fi
 
-	deb="${output_dir}/nvtop_${PACKAGE_VERSION_RESOLVED}_${HOST_ARCH}.deb"
-	pin_deb="${output_dir}/nvtop-pin_${PACKAGE_VERSION_RESOLVED}_all.deb"
+	deb="${output_dir}/nvtop_${PACKAGE_FILE_VERSION}_${HOST_ARCH}.deb"
+	pin_deb="${output_dir}/nvtop-pin_${PACKAGE_FILE_VERSION}_all.deb"
 	if [ ! -f "${deb}" ]; then
 		TARGET_BUILD_ERROR["${target_key}"]="expected package missing: ${deb}"
 		return 1
@@ -348,8 +407,7 @@ sudo -n apt-get update || echo "[deploy] WARNING: apt-get update failed; continu
 # redeploying an older commit is not a hard error. The pin package, if it is
 # in this set, is installed in the same transaction as nvtop so apt never sees
 # a moment where nvtop is pinned away but not yet present.
-sudo -n apt-get install -y --allow-downgrades --reinstall "${packages[@]}"
-sudo -n apt-get check
+sudo -n apt-get install -y --no-install-recommends --allow-downgrades --reinstall "${packages[@]}"
 REMOTE_INSTALL
 	then
 		status=1
@@ -362,7 +420,11 @@ REMOTE_INSTALL
 		return 1
 	fi
 
-	installed="$(query_installed_version "${node}")"
+	if ! installed="$(query_installed_version "${node}")"; then
+		NODE_RESULT["${node}"]="FAILED"
+		NODE_DETAIL["${node}"]="installed, but the version could not be read back over SSH"
+		return 1
+	fi
 	if [ "${installed}" != "${PACKAGE_VERSION_RESOLVED}" ]; then
 		NODE_INSTALLED["${node}"]="${installed:-unknown}"
 		NODE_RESULT["${node}"]="FAILED"
@@ -421,12 +483,20 @@ REMOTE_UNDEPLOY
 
 	NODE_INSTALLED["${node}"]=""
 	NODE_RESULT["${node}"]="OK"
-	NODE_DETAIL["${node}"]="$([ -n "${NODE_PREVIOUS[${node}]:-}" ] && printf 'removed' || printf 'already absent')"
+	if [ -n "${NODE_PREVIOUS[${node}]:-}" ]; then
+		NODE_DETAIL["${node}"]="removed"
+	elif [ -n "${NODE_RESIDUE[${node}]:-}" ]; then
+		# No installed nvtop, but a config-files remnant or a lone nvtop-pin
+		# was purged -- which is what takes the apt pin file away.
+		NODE_DETAIL["${node}"]="purged leftovers"
+	else
+		NODE_DETAIL["${node}"]="already absent"
+	fi
 	printf '[undeploy] %s: %s.\n' "${node}" "${NODE_DETAIL[${node}]}"
 }
 
 print_summary() {
-	local node previous installed result
+	local node previous installed result os
 	local w_node=4 w_os=2 w_prev=8 w_inst=9 w_res=6
 
 	for node in "${NODES_LIST[@]}"; do
@@ -434,7 +504,8 @@ print_summary() {
 		installed="${NODE_INSTALLED[${node}]:---}"
 		result="${NODE_RESULT[${node}]:-FAILED}: ${NODE_DETAIL[${node}]:-not attempted}"
 		((${#node} > w_node)) && w_node=${#node}
-		((${#NODE_OS[${node}]} > w_os)) && w_os=${#NODE_OS[${node}]}
+		os="${NODE_OS[${node}]:-unknown}"
+		((${#os} > w_os)) && w_os=${#os}
 		((${#previous} > w_prev)) && w_prev=${#previous}
 		((${#installed} > w_inst)) && w_inst=${#installed}
 		((${#result} > w_res)) && w_res=${#result}
@@ -476,6 +547,7 @@ main() {
 	parse_nodes "${NODES_CSV}" || return $?
 	require_local_commands || return 1
 	if [ "${OPERATION}" = deploy ]; then
+		require_clean_repository || return 1
 		HOST_ARCH="$(dpkg --print-architecture)"
 		derive_package_version || return 1
 		printf '[deploy] Package version: %s\n' "${PACKAGE_VERSION_RESOLVED}"

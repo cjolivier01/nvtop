@@ -77,6 +77,7 @@ case "${JOBS}" in
 esac
 [ "$((10#${JOBS}))" -gt 0 ] || die "--jobs needs a positive integer, got '${JOBS}'"
 
+ARCH="$(dpkg --print-architecture 2>/dev/null || echo unknown)"
 command -v docker >/dev/null 2>&1 || die "docker not found"
 command -v git >/dev/null 2>&1 || die "git not found"
 git -C "${REPO_ROOT}" rev-parse --git-dir >/dev/null 2>&1 ||
@@ -132,6 +133,18 @@ shopt -s nullglob
 produced=("${OUTPUT_DIR}"/nvtop_*.deb)
 shopt -u nullglob
 [ "${#produced[@]}" -gt 0 ] || die "docker completed without writing a package to ${OUTPUT_DIR}"
+if [ -n "${PACKAGE_VERSION}" ]; then
+	# make_deb.sh appends a Debian revision when the caller omitted one and
+	# drops the epoch from file names; match what it actually wrote.
+	expected_version="${PACKAGE_VERSION}"
+	case "${expected_version}" in
+	*-*) ;;
+	*) expected_version="${expected_version}-1" ;;
+	esac
+	expected_version="${expected_version#*:}"
+	[ -f "${OUTPUT_DIR}/nvtop_${expected_version}_${ARCH}.deb" ] ||
+		die "docker completed without writing nvtop_${expected_version}_${ARCH}.deb to ${OUTPUT_DIR}"
+fi
 
 echo
 echo "Package output directory: ${OUTPUT_DIR}"

@@ -53,10 +53,11 @@ MAKE_DEB_ARGS = --output-dir="$(DEB_OUTPUT_DIR)" --jobs=$(strip $(CMAKE_JOBS)) \
 TARGET_UBUNTU ?= 24.04
 NODES ?=
 DEPLOY_OUTPUT_DIR ?= $(DEB_OUTPUT_DIR)
-MAKE_DEB_DOCKER_ARGS = --target-ubuntu=$(strip $(TARGET_UBUNTU)) \
-	--output-dir="$(DEB_OUTPUT_DIR)/ubuntu$(strip $(TARGET_UBUNTU))" \
-	--jobs=$(strip $(CMAKE_JOBS)) \
-	$(if $(PACKAGE_VERSION),--version="$(PACKAGE_VERSION)",)
+export NVTOP_NODES := $(NODES)
+export NVTOP_TARGET_UBUNTU := $(TARGET_UBUNTU)
+export NVTOP_DEB_OUTPUT_DIR := $(DEB_OUTPUT_DIR)
+export NVTOP_PACKAGE_VERSION := $(PACKAGE_VERSION)
+export NVTOP_DEPLOY_OUTPUT_DIR := $(DEPLOY_OUTPUT_DIR)
 
 # $(1) = build directory, $(2) = configure arguments specific to that directory
 # MAKEFLAGS is cleared so that the make CMake drives does not warn about the
@@ -135,7 +136,11 @@ deb-pin:
 	"$(TOPDIR)/packaging/make_deb.sh" $(MAKE_DEB_ARGS) --pin-only
 
 deb-docker:
-	"$(TOPDIR)/packaging/make_deb_docker.sh" $(MAKE_DEB_DOCKER_ARGS)
+	@"$(TOPDIR)/packaging/make_deb_docker.sh" \
+		--target-ubuntu="$$NVTOP_TARGET_UBUNTU" \
+		--output-dir="$$NVTOP_DEB_OUTPUT_DIR/ubuntu$$NVTOP_TARGET_UBUNTU" \
+		--jobs=$(strip $(CMAKE_JOBS)) \
+		$${NVTOP_PACKAGE_VERSION:+--version="$$NVTOP_PACKAGE_VERSION"}
 
 deb-ubuntu22:
 	$(MAKE) deb-docker TARGET_UBUNTU=22.04
@@ -147,21 +152,22 @@ deb-ubuntu26:
 	$(MAKE) deb-docker TARGET_UBUNTU=26.04
 
 deploy:
-	@if [ -z "$(strip $(NODES))" ]; then \
+	@if [ -z "$$(printf '%s' "$$NVTOP_NODES" | tr -d '[:space:]')" ]; then \
 		echo 'ERROR: NODES is required. Usage: make deploy NODES=node1,node2' >&2; \
 		exit 2; \
 	fi
-	NODES="$(NODES)" \
-	PACKAGE_VERSION="$(PACKAGE_VERSION)" \
-	DEPLOY_OUTPUT_DIR="$(DEPLOY_OUTPUT_DIR)" \
+	@NODES="$$NVTOP_NODES" \
+	PACKAGE_VERSION="$$NVTOP_PACKAGE_VERSION" \
+	DEPLOY_OUTPUT_DIR="$$NVTOP_DEPLOY_OUTPUT_DIR" \
+	DEPLOY_JOBS=$(strip $(CMAKE_JOBS)) \
 	"$(TOPDIR)/packaging/deploy.sh"
 
 undeploy:
-	@if [ -z "$(strip $(NODES))" ]; then \
+	@if [ -z "$$(printf '%s' "$$NVTOP_NODES" | tr -d '[:space:]')" ]; then \
 		echo 'ERROR: NODES is required. Usage: make undeploy NODES=node1,node2' >&2; \
 		exit 2; \
 	fi
-	NODES="$(NODES)" "$(TOPDIR)/packaging/deploy.sh" --undeploy
+	@NODES="$$NVTOP_NODES" "$(TOPDIR)/packaging/deploy.sh" --undeploy
 
 clean:
 	@cleaned=0; \
@@ -209,6 +215,7 @@ print_targets:
 		'deb-docker     Build the .deb files in an Ubuntu $(TARGET_UBUNTU) container, so the' \
 		'               binary matches that release rather than this machine.' \
 		'deb-ubuntu22   deb-docker for Ubuntu 22.04 (also -ubuntu24, -ubuntu26).' \
+		'               Containerized packages land in $(DEB_OUTPUT_DIR)/ubuntu<release>.' \
 		'' \
 		'Deployment' \
 		'----------' \

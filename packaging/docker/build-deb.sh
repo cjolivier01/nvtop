@@ -22,8 +22,13 @@ status=0
 /source/packaging/make_deb.sh "${args[@]}" "$@" || status=$?
 
 # The build runs as root; hand the artifacts back to whoever invoked Docker.
+# Only the packages, and only at the top level: /output may be a directory the
+# caller already uses for other things, and recursing would rewrite all of it.
+# A chown failure must not mask the build's own exit status either.
 if [ -n "${HOST_UID:-}" ] && [ -n "${HOST_GID:-}" ]; then
-	chown -R -- "${HOST_UID}:${HOST_GID}" /output
+	find /output -maxdepth 1 -type f -name '*.deb' \
+		-exec chown -- "${HOST_UID}:${HOST_GID}" {} + || \
+		echo "WARNING: could not hand the packages back to ${HOST_UID}:${HOST_GID}" >&2
 fi
 
 exit "${status}"
