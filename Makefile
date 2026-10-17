@@ -45,8 +45,8 @@ CMAKE_COMMON_ARGS = -DCMAKE_INSTALL_PREFIX="$(PREFIX)" $(CMAKE_ARGS)
 # Debian packaging. PACKAGE_VERSION defaults to the version in CMakeLists.txt.
 DEB_OUTPUT_DIR ?= $(TOPDIR)/dist
 PACKAGE_VERSION ?=
-MAKE_DEB_ARGS = --output-dir="$(DEB_OUTPUT_DIR)" --jobs=$(strip $(CMAKE_JOBS)) \
-	$(if $(PACKAGE_VERSION),--version="$(PACKAGE_VERSION)",)
+MAKE_DEB_ARGS = --output-dir="$$NVTOP_DEB_OUTPUT_DIR" --jobs="$$NVTOP_JOBS" \
+	$${NVTOP_PACKAGE_VERSION:+--version="$$NVTOP_PACKAGE_VERSION"}
 
 # Containerized packaging and deployment. TARGET_UBUNTU picks the ABI baseline
 # the package is built against; NODES is the comma-separated SSH node list.
@@ -54,8 +54,9 @@ TARGET_UBUNTU ?= 24.04
 NODES ?=
 DEPLOY_OUTPUT_DIR ?= $(DEB_OUTPUT_DIR)
 export NVTOP_NODES := $(NODES)
-export NVTOP_TARGET_UBUNTU := $(TARGET_UBUNTU)
+export NVTOP_TARGET_UBUNTU := $(strip $(TARGET_UBUNTU))
 export NVTOP_DEB_OUTPUT_DIR := $(DEB_OUTPUT_DIR)
+export NVTOP_JOBS := $(strip $(CMAKE_JOBS))
 export NVTOP_PACKAGE_VERSION := $(PACKAGE_VERSION)
 export NVTOP_DEPLOY_OUTPUT_DIR := $(DEPLOY_OUTPUT_DIR)
 
@@ -118,28 +119,60 @@ install:
 	fi
 	$(CMAKE) --install "$(RELEASE_DIR)"
 
+# Removes exactly what this build tree installed, from the manifest CMake
+# wrote, then prunes any directory the install left empty -- walking up to but
+# never including the prefix itself, since nothing records whether the prefix
+# pre-existed.
 uninstall:
-	@if [ ! -f "$(RELEASE_DIR)/install_manifest.txt" ]; then \
-		echo 'ERROR: no install manifest in $(RELEASE_DIR); nothing was installed from this build tree.' >&2; \
+	@manifest="$(RELEASE_DIR)/install_manifest.txt"; \
+	if [ ! -f "$$manifest" ]; then \
+		echo "ERROR: no install manifest at $$manifest." >&2; \
+		echo "       uninstall removes what this build tree installed, so run it from" >&2; \
+		echo "       the tree the install came from, or \`make perf && make install\` again" >&2; \
+		echo "       with the same PREFIX first." >&2; \
 		exit 2; \
-	fi
-	$(CMAKE) --build "$(RELEASE_DIR)" --target uninstall
+	fi; \
+	configured=$$(sed -n 's|^CMAKE_INSTALL_PREFIX:PATH=||p' "$(RELEASE_DIR)/CMakeCache.txt" 2>/dev/null); \
+	root="$(DESTDIR)$$configured"; \
+	dirlist=$$(mktemp) || exit $$?; \
+	: "CMake writes the manifest without a trailing newline, so the read loop" ; \
+	: "below must also accept a final unterminated line or it drops a file." ; \
+	trap 'rm -f "$$dirlist"' EXIT; \
+	while IFS= read -r entry || [ -n "$$entry" ]; do \
+		[ -n "$$entry" ] || continue; \
+		path="$(DESTDIR)$$entry"; \
+		if [ -e "$$path" ] || [ -L "$$path" ]; then \
+			echo "  removing $$path"; \
+			rm -f -- "$$path" || exit $$?; \
+		else \
+			echo "  already gone: $$path"; \
+		fi; \
+		dirname -- "$$path" >>"$$dirlist"; \
+	done <"$$manifest"; \
+	[ -n "$$configured" ] || exit 0; \
+	sort -ru "$$dirlist" | while IFS= read -r dir; do \
+		while [ -n "$$dir" ] && [ "$$dir" != "$$root" ] && [ "$$dir" != "/" ]; do \
+			rmdir -- "$$dir" 2>/dev/null || break; \
+			echo "  removed empty directory $$dir"; \
+			dir=$$(dirname -- "$$dir"); \
+		done; \
+	done
 
 deb:
 	@echo "Debian package output directory: $(DEB_OUTPUT_DIR)"
-	"$(TOPDIR)/packaging/make_deb.sh" $(MAKE_DEB_ARGS)
+	@"$(TOPDIR)/packaging/make_deb.sh" $(MAKE_DEB_ARGS)
 
 deb-only:
-	"$(TOPDIR)/packaging/make_deb.sh" $(MAKE_DEB_ARGS) --deb-only
+	@"$(TOPDIR)/packaging/make_deb.sh" $(MAKE_DEB_ARGS) --deb-only
 
 deb-pin:
-	"$(TOPDIR)/packaging/make_deb.sh" $(MAKE_DEB_ARGS) --pin-only
+	@"$(TOPDIR)/packaging/make_deb.sh" $(MAKE_DEB_ARGS) --pin-only
 
 deb-docker:
 	@"$(TOPDIR)/packaging/make_deb_docker.sh" \
 		--target-ubuntu="$$NVTOP_TARGET_UBUNTU" \
 		--output-dir="$$NVTOP_DEB_OUTPUT_DIR/ubuntu$$NVTOP_TARGET_UBUNTU" \
-		--jobs=$(strip $(CMAKE_JOBS)) \
+		--jobs="$$NVTOP_JOBS" \
 		$${NVTOP_PACKAGE_VERSION:+--version="$$NVTOP_PACKAGE_VERSION"}
 
 deb-ubuntu22:
@@ -159,7 +192,7 @@ deploy:
 	@NODES="$$NVTOP_NODES" \
 	PACKAGE_VERSION="$$NVTOP_PACKAGE_VERSION" \
 	DEPLOY_OUTPUT_DIR="$$NVTOP_DEPLOY_OUTPUT_DIR" \
-	DEPLOY_JOBS=$(strip $(CMAKE_JOBS)) \
+	DEPLOY_JOBS="$$NVTOP_JOBS" \
 	"$(TOPDIR)/packaging/deploy.sh"
 
 undeploy:
@@ -180,7 +213,7 @@ clean:
 	[ "$$cleaned" = 1 ] || echo "Nothing to clean: no configured build directory under $(BUILD_ROOT)."
 
 distclean expunge:
-	rm -rf "$(BUILD_ROOT)" "$(DEB_OUTPUT_DIR)"
+	@rm -rf "$(BUILD_ROOT)" "$$NVTOP_DEB_OUTPUT_DIR"
 
 print_targets:
 	@printf '%s\n' \
@@ -205,7 +238,8 @@ print_targets:
 		'               Run `make perf` first; this target does not build, so that' \
 		'               `sudo make install` does not leave a root-owned build tree.' \
 		'               The prefix is whatever `make perf PREFIX=...` configured.' \
-		'uninstall      Remove the files listed by the Release build install manifest.' \
+		'uninstall      Remove the files this build tree installed, per its install' \
+		'               manifest, and any directory left empty (never the prefix).' \
 		'' \
 		'Packaging' \
 		'---------' \
@@ -222,6 +256,7 @@ print_targets:
 		'deploy         Build and install on comma-separated NODES over SSH (required).' \
 		'               One package per distinct Ubuntu release in the set.' \
 		'undeploy       Purge nvtop and nvtop-pin from comma-separated NODES.' \
+		'               Purges any nvtop, including a distribution-installed one.' \
 		'' \
 		'Tests' \
 		'-----' \

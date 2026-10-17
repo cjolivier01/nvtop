@@ -175,22 +175,46 @@ static void preliminary_plot_positioning(unsigned rows_for_plots, unsigned plot_
           } else {
             // No merge left: every remaining pair would exceed
             // MAX_LINES_PER_PLOT. Rather than abandon the chart area
-            // entirely, stop plotting the last device and try again, so the
-            // GPUs that do fit keep their charts. Reachable whenever the
-            // per-GPU metric count is high enough that no two charts can be
-            // combined -- three metrics on three GPUs already does it.
+            // entirely, give up one whole plot and try again, so the GPUs
+            // that do fit keep their charts. Reachable whenever the per-GPU
+            // metric count is high enough that no two charts can be combined
+            // -- three metrics on three GPUs already does it. Note the unit
+            // is a plot, not a device: after earlier merges one plot can
+            // carry several GPUs, and the loop can return here more than
+            // once, so more than one chart may go.
+            //
+            // An integrated GPU's chart goes first. On an iGPU + discrete
+            // machine the discrete card is the one being watched, and it is
+            // usually the higher index, so dropping the last plot outright
+            // would take exactly the wrong one.
             unsigned last_plotted = devices_count;
+            unsigned last_integrated = devices_count;
             unsigned plots_left = 0;
             for (unsigned idx = 0; idx < devices_count; ++idx) {
-              if (num_info_per_plot[idx]) {
-                last_plotted = idx;
-                plots_left++;
-              }
-            }
-            if (plots_left > 1) {
-              num_info_per_plot[last_plotted] = 0;
+              if (!num_info_per_plot[idx])
+                continue;
+              last_plotted = idx;
+              plots_left++;
+              bool any_device = false;
+              bool all_integrated = true;
               for (unsigned devId = 0; devId < devices_count; ++devId) {
-                if (map_device_to_plot[devId] == last_plotted)
+                if (map_device_to_plot[devId] != idx)
+                  continue;
+                any_device = true;
+                const struct gpu_info *gpu = gpuOpts[devId].linkedGpu;
+                if (!gpu || !gpu->static_info.integrated_graphics) {
+                  all_integrated = false;
+                  break;
+                }
+              }
+              if (any_device && all_integrated)
+                last_integrated = idx;
+            }
+            unsigned plot_to_drop = last_integrated < devices_count ? last_integrated : last_plotted;
+            if (plots_left > 1) {
+              num_info_per_plot[plot_to_drop] = 0;
+              for (unsigned devId = 0; devId < devices_count; ++devId) {
+                if (map_device_to_plot[devId] == plot_to_drop)
                   map_device_to_plot[devId] = UNPLOTTED_DEVICE;
               }
               search_a_window_configuration = true;

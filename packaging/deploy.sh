@@ -69,10 +69,13 @@ Optional make variables:
   PACKAGE_VERSION=VERSION  Override the derived package version.
   DEPLOY_OUTPUT_DIR=DIR    Package output root (default: dist).
   DEPLOY_PIN=0             Do not install nvtop-pin alongside nvtop.
-  DEPLOY_JOBS=N            Parallel compile jobs for the container builds.
+  CMAKE_JOBS=N             Parallel compile jobs for the container builds
+                           (or just use make -j N).
 
 Environment:
   NVTOP_DEPLOY_SSH_OPTS             Extra ssh/scp options, e.g. '-J bastion'.
+                                    Word-split, so no option value may
+                                    contain a space.
                                     Use '-o Port=N', not '-p': scp reads -p
                                     as preserve-times. Appended after the
                                     built-in options, so BatchMode and
@@ -158,6 +161,10 @@ require_clean_repository() {
 		printf 'ERROR: %s is not a git checkout; deploy packages git archive HEAD.\n' "${REPO_ROOT}" >&2
 		return 1
 	fi
+	if ! git -C "${REPO_ROOT}" rev-parse --verify -q HEAD >/dev/null; then
+		printf 'ERROR: %s has no commits; deploy packages git archive HEAD.\n' "${REPO_ROOT}" >&2
+		return 1
+	fi
 	if ! git -C "${REPO_ROOT}" diff --quiet HEAD -- || ! git -C "${REPO_ROOT}" diff --cached --quiet; then
 		printf 'ERROR: refusing to deploy with tracked changes: commit or stash them first.\n' >&2
 		return 1
@@ -181,7 +188,7 @@ require_local_commands() {
 
 detect_node() {
 	local node="$1"
-	local output identity marker os_id os_version id_like codename architecture previous extra release
+	local output identity marker os_id os_version id_like codename architecture previous residue extra release
 
 	printf '\n[%s] Detecting %s...\n' "${OPERATION}" "${node}"
 	if ! output="$(ssh "${SSH_OPTS[@]}" "${node}" bash -s <<'REMOTE_DETECT'
@@ -291,6 +298,12 @@ derive_package_version() {
 		fi
 		PACKAGE_VERSION_RESOLVED="${base}-1+git${commit_epoch}.${short_hash}"
 	fi
+	# Validate what the caller actually typed, before normalizing, so the
+	# error quotes their string rather than a mangled one.
+	if ! dpkg --validate-version "${PACKAGE_VERSION_RESOLVED}" >/dev/null 2>&1; then
+		printf 'ERROR: invalid package version: %s\n' "${PACKAGE_VERSION_RESOLVED}" >&2
+		return 1
+	fi
 	# Apply exactly the normalization make_deb.sh does, or the filenames this
 	# script predicts will not be the ones the build writes: a version with no
 	# Debian revision gains "-1", and the epoch is stripped from file names.
@@ -299,10 +312,6 @@ derive_package_version() {
 	*) PACKAGE_VERSION_RESOLVED="${PACKAGE_VERSION_RESOLVED}-1" ;;
 	esac
 	PACKAGE_FILE_VERSION="${PACKAGE_VERSION_RESOLVED#*:}"
-	if ! dpkg --validate-version "${PACKAGE_VERSION_RESOLVED}" >/dev/null 2>&1; then
-		printf 'ERROR: invalid package version: %s\n' "${PACKAGE_VERSION_RESOLVED}" >&2
-		return 1
-	fi
 }
 
 build_target() {
@@ -421,11 +430,14 @@ REMOTE_INSTALL
 	fi
 
 	if ! installed="$(query_installed_version "${node}")"; then
+		NODE_INSTALLED["${node}"]=""
 		NODE_RESULT["${node}"]="FAILED"
 		NODE_DETAIL["${node}"]="installed, but the version could not be read back over SSH"
 		return 1
 	fi
-	if [ "${installed}" != "${PACKAGE_VERSION_RESOLVED}" ]; then
+	# dpkg normalizes a zero epoch away, so compare the way dpkg does rather
+	# than as strings: "0:4.0.0-1" installs and reads back as "4.0.0-1".
+	if ! dpkg --compare-versions "${installed}" eq "${PACKAGE_VERSION_RESOLVED}"; then
 		NODE_INSTALLED["${node}"]="${installed:-unknown}"
 		NODE_RESULT["${node}"]="FAILED"
 		NODE_DETAIL["${node}"]="post-install verification failed"
