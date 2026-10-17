@@ -3,8 +3,10 @@
 # is always right for `make` from the source directory and for `make -C`; the
 # check below turns `make -f /elsewhere/Makefile` from an unrelated directory
 # into an error instead of a build of the wrong tree.
+# Two nvtop-specific paths, so that running this from some other CMake
+# project's directory is an error rather than a build of that project.
 TOPDIR := $(CURDIR)
-ifneq ($(shell test -f "$(TOPDIR)/CMakeLists.txt" && echo found),found)
+ifneq ($(shell test -f "$(TOPDIR)/CMakeLists.txt" -a -f "$(TOPDIR)/src/nvtop.c" && echo found),found)
 $(error Run make from the nvtop source directory, or use `make -C /path/to/nvtop`)
 endif
 CMAKE ?= cmake
@@ -68,10 +70,19 @@ run: perf
 	"$(RELEASE_DIR)/src/nvtop"
 
 # Deliberately not dependent on `perf`: this is the one target people run under
-# sudo, and building as root would leave the build tree owned by root.
+# sudo, and building as root would leave the build tree owned by root. The
+# prefix is therefore whatever `make perf` configured, and PREFIX here can only
+# be checked against it -- CMake bakes it into the RPATH at configure time, so
+# redirecting the install alone would produce a subtly different binary.
 install:
 	@if [ ! -f "$(RELEASE_DIR)/CMakeCache.txt" ]; then \
 		echo 'ERROR: no Release build in $(RELEASE_DIR); run `make perf` first.' >&2; \
+		exit 2; \
+	fi
+	@configured=$$(sed -n 's/^CMAKE_INSTALL_PREFIX:PATH=//p' "$(RELEASE_DIR)/CMakeCache.txt"); \
+	if [ "$$configured" != "$(PREFIX)" ]; then \
+		echo "ERROR: $(RELEASE_DIR) was configured with prefix '$$configured', not '$(PREFIX)'." >&2; \
+		echo "       Run \`make perf PREFIX=$(PREFIX)\` first; the prefix is fixed at configure time." >&2; \
 		exit 2; \
 	fi
 	$(CMAKE) --install "$(RELEASE_DIR)"
@@ -102,6 +113,7 @@ print_targets:
 		'' \
 		"'make -j N <target>' forwards N to CMake as --parallel N; with no -j," \
 		'nvtop builds with --parallel $(NPROC). Override with CMAKE_JOBS=N.' \
+		'Targets themselves run one at a time: debug and test share a build directory.' \
 		'Append configure flags with CMAKE_ARGS="-DNVIDIA_SUPPORT=ON ...".' \
 		'' \
 		'Build Outputs' \
@@ -114,9 +126,10 @@ print_targets:
 		'Run & Install' \
 		'-------------' \
 		'run            Build Release and run build/release/src/nvtop.' \
-		'install        Install an existing Release build under $(PREFIX) (honors DESTDIR).' \
+		'install        Install an existing Release build (honors DESTDIR).' \
 		'               Run `make perf` first; this target does not build, so that' \
 		'               `sudo make install` does not leave a root-owned build tree.' \
+		'               The prefix is fixed by `make perf PREFIX=...`, currently $(PREFIX).' \
 		'uninstall      Remove the files listed by the Release build install manifest.' \
 		'' \
 		'Tests' \

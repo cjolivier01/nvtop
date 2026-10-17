@@ -397,12 +397,15 @@ make debug        # Debug build (extra warning flags) in build/debug
 make asan         # Debug build with the address/undefined sanitizers
 make test         # Configure with BUILD_TESTING=ON and run ctest
 make run          # Build Release and run it
-make perf && sudo make install  # Install (PREFIX and DESTDIR are honored)
+make perf && sudo make install  # Install (DESTDIR is honored)
 make distclean    # Remove build/ entirely
 ```
 
 `install` deliberately does not build: compiling under `sudo` would leave the
-build tree owned by root and break the next unprivileged `make perf`.
+build tree owned by root and break the next unprivileged `make perf`. Because
+of that, the install prefix is whatever `make perf` was configured with —
+use `make perf PREFIX=/opt/nvtop && sudo make install`, not `make install
+PREFIX=...`, which refuses rather than installing somewhere unexpected.
 
 `make -j N <target>` is forwarded to CMake as `--parallel N`; extra configure
 flags go through `CMAKE_ARGS`, for example
