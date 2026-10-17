@@ -7,6 +7,14 @@ cmake_minimum_required(VERSION 3.18)
 project(nvtop VERSION 3.3.2
   LANGUAGES C CXX)
 
+# An in-source build would have CMake generate its own Makefile over the one
+# tracked in the repository root.
+if(CMAKE_BINARY_DIR STREQUAL CMAKE_SOURCE_DIR)
+  message(FATAL_ERROR
+    "In-source builds are not supported: they would overwrite the repository's Makefile.\n"
+    "Build in a subdirectory instead, for example 'cmake -S . -B build', or use 'make perf'.")
+endif()
+
 set(default_build_type "Release")
 # Default build type
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)

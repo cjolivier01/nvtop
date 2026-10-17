@@ -384,6 +384,34 @@ The build system supports multiple build types (e.g. -DCMAKE_BUILD_TYPE=RelWithD
 * RelWithDebInfo: Binary with debug info
 * Debug: Compile with warning flags and address/undefined sanitizers enabled (for development purposes)
 
+### Top level Makefile
+
+The repository root ships a `Makefile` that wraps the CMake invocations above,
+so each build type lands in its own directory under `build/` and the trees do
+not reconfigure each other away:
+
+```bash
+make              # List every target with a short description
+make perf         # Release build in build/release
+make debug        # Debug build (extra warning flags) in build/debug
+make asan         # Debug build with the address/undefined sanitizers
+make test         # Configure with BUILD_TESTING=ON and run ctest
+make run          # Build Release and run it
+make perf && sudo make install  # Install (DESTDIR is honored)
+make distclean    # Remove build/ entirely
+```
+
+`install` deliberately does not build: compiling under `sudo` would leave the
+build tree owned by root and break the next unprivileged `make perf`. The
+install prefix therefore belongs to the configure step — use
+`make perf PREFIX=/opt/nvtop && sudo make install`. Passing a `PREFIX` to
+`install` that disagrees with the one the tree was built for is refused rather
+than silently installing somewhere else.
+
+`make -j N <target>` is forwarded to CMake as `--parallel N`; extra configure
+flags go through `CMAKE_ARGS`, for example
+`make perf CMAKE_ARGS="-DNVIDIA_SUPPORT=ON -DAMDGPU_SUPPORT=OFF"`.
+
 Troubleshoot
 ------------
 

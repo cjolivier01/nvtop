@@ -4,3 +4,7 @@ build/
 cmake-build*/
 .vscode
 .idea
+# Left in the source directory by an attempted in-source cmake run, which
+# CMakeLists.txt refuses.
+/CMakeCache.txt
+/CMakeFiles/
