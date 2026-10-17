@@ -48,6 +48,16 @@ PACKAGE_VERSION ?=
 MAKE_DEB_ARGS = --output-dir="$(DEB_OUTPUT_DIR)" --jobs=$(strip $(CMAKE_JOBS)) \
 	$(if $(PACKAGE_VERSION),--version="$(PACKAGE_VERSION)",)
 
+# Containerized packaging and deployment. TARGET_UBUNTU picks the ABI baseline
+# the package is built against; NODES is the comma-separated SSH node list.
+TARGET_UBUNTU ?= 24.04
+NODES ?=
+DEPLOY_OUTPUT_DIR ?= $(DEB_OUTPUT_DIR)
+MAKE_DEB_DOCKER_ARGS = --target-ubuntu=$(strip $(TARGET_UBUNTU)) \
+	--output-dir="$(DEB_OUTPUT_DIR)/ubuntu$(strip $(TARGET_UBUNTU))" \
+	--jobs=$(strip $(CMAKE_JOBS)) \
+	$(if $(PACKAGE_VERSION),--version="$(PACKAGE_VERSION)",)
+
 # $(1) = build directory, $(2) = configure arguments specific to that directory
 # MAKEFLAGS is cleared so that the make CMake drives does not warn about the
 # jobserver it cannot join; parallelism is passed explicitly instead.
@@ -63,7 +73,7 @@ all: print_targets
 .NOTPARALLEL:
 
 .PHONY: all print_targets perf debug relwithdebinfo asan test run install uninstall clean distclean expunge \
-	deb deb-only deb-pin
+	deb deb-only deb-pin deb-docker deb-ubuntu22 deb-ubuntu24 deb-ubuntu26 deploy undeploy
 
 perf:
 	$(call cmake_build,$(RELEASE_DIR),-DCMAKE_BUILD_TYPE=Release)
@@ -124,6 +134,35 @@ deb-only:
 deb-pin:
 	"$(TOPDIR)/packaging/make_deb.sh" $(MAKE_DEB_ARGS) --pin-only
 
+deb-docker:
+	"$(TOPDIR)/packaging/make_deb_docker.sh" $(MAKE_DEB_DOCKER_ARGS)
+
+deb-ubuntu22:
+	$(MAKE) deb-docker TARGET_UBUNTU=22.04
+
+deb-ubuntu24:
+	$(MAKE) deb-docker TARGET_UBUNTU=24.04
+
+deb-ubuntu26:
+	$(MAKE) deb-docker TARGET_UBUNTU=26.04
+
+deploy:
+	@if [ -z "$(strip $(NODES))" ]; then \
+		echo 'ERROR: NODES is required. Usage: make deploy NODES=node1,node2' >&2; \
+		exit 2; \
+	fi
+	NODES="$(NODES)" \
+	PACKAGE_VERSION="$(PACKAGE_VERSION)" \
+	DEPLOY_OUTPUT_DIR="$(DEPLOY_OUTPUT_DIR)" \
+	"$(TOPDIR)/packaging/deploy.sh"
+
+undeploy:
+	@if [ -z "$(strip $(NODES))" ]; then \
+		echo 'ERROR: NODES is required. Usage: make undeploy NODES=node1,node2' >&2; \
+		exit 2; \
+	fi
+	NODES="$(NODES)" "$(TOPDIR)/packaging/deploy.sh" --undeploy
+
 clean:
 	@cleaned=0; \
 	for dir in "$(BUILD_ROOT)" "$(BUILD_ROOT)"/*/; do \
@@ -167,6 +206,15 @@ print_targets:
 		'deb            Build the nvtop and nvtop-pin .deb files into $(DEB_OUTPUT_DIR).' \
 		'deb-only       Build only the nvtop .deb.' \
 		'deb-pin        Build only the nvtop-pin .deb (apt pin, no compilation).' \
+		'deb-docker     Build the .deb files in an Ubuntu $(TARGET_UBUNTU) container, so the' \
+		'               binary matches that release rather than this machine.' \
+		'deb-ubuntu22   deb-docker for Ubuntu 22.04 (also -ubuntu24, -ubuntu26).' \
+		'' \
+		'Deployment' \
+		'----------' \
+		'deploy         Build and install on comma-separated NODES over SSH (required).' \
+		'               One package per distinct Ubuntu release in the set.' \
+		'undeploy       Purge nvtop and nvtop-pin from comma-separated NODES.' \
 		'' \
 		'Tests' \
 		'-----' \
