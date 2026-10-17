@@ -1719,6 +1719,11 @@ void save_current_data_to_ring(struct list_head *devices, struct nvtop_interface
             data_val = device->dynamic_info.effective_load_rate;
           }
           break;
+        case plot_sm_occupancy:
+          if (GPUINFO_DYNAMIC_FIELD_VALID(&device->dynamic_info, sm_occupancy)) {
+            data_val = device->dynamic_info.sm_occupancy;
+          }
+          break;
         case plot_information_count:
           break;
         }
@@ -1788,6 +1793,9 @@ static unsigned populate_plot_data_from_ring_buffer(const struct nvtop_interface
         case plot_effective_load_rate:
           snprintf(plot_legend[in_processing], PLOT_MAX_LEGEND_SIZE, "GPU%u eff. load%%", dev_id);
           break;
+        case plot_sm_occupancy:
+          snprintf(plot_legend[in_processing], PLOT_MAX_LEGEND_SIZE, "GPU%u SM occ%%", dev_id);
+          break;
         case plot_information_count:
           break;
         }
@@ -1830,6 +1838,17 @@ static void draw_plots(struct nvtop_interface *interface) {
 }
 
 void draw_gpu_info_ncurses(unsigned devices_count, struct list_head *devices, struct nvtop_interface *interface) {
+
+  // Sample the NVML GPM counters only on the devices whose own chart shows SM
+  // occupancy, so neither an idle nvtop nor a GPU nobody is plotting arms
+  // them. Picked up by the next refresh, which is soon enough: the series
+  // needs two samples to produce its first point anyway.
+  for (unsigned i = 0; i < interface->total_dev_count; ++i) {
+    struct gpu_info *gpu = interface->options.gpu_specific_opts[i].linkedGpu;
+    if (gpu)
+      gpu->collect_sm_occupancy =
+          plot_isset_draw_info(plot_sm_occupancy, interface->options.gpu_specific_opts[i].to_draw);
+  }
 
   draw_devices(devices, interface);
   if (!interface->setup_win.visible) {
